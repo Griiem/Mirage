@@ -8,7 +8,7 @@ local Tab = Window:Tab({
 })
 
 Tab:Toggle({
-    Title = "Skins ativas",
+    Title = "Skins enabled",
     Type = "Checkbox",
     Value = true,
 
@@ -18,8 +18,8 @@ Tab:Toggle({
 })
 
 Tab:Button({
-    Title = "Atualizar skins",
-    Desc = "Baixa o index do GitHub e reaplica em quem está no servidor",
+    Title = "Refresh skins",
+    Desc = "Downloads the index from GitHub and reapplies skins to players in this server",
 
     Callback = function()
         task.spawn(function()
@@ -28,7 +28,7 @@ Tab:Button({
             if not ok then
                 WindUI:Notify({
                     Title = "Mirage",
-                    Content = "Não consegui ler skins/index.json.",
+                    Content = "Could not read skins/index.json.",
                     Icon = "x",
                     Duration = 4,
                 })
@@ -37,7 +37,7 @@ Tab:Button({
 
             WindUI:Notify({
                 Title = "Mirage",
-                Content = Skins:Count() .. " jogador(es) com skin neste servidor.",
+                Content = Skins:Count() .. " player(s) with a skin in this server.",
                 Icon = "check",
                 Duration = 4,
             })
