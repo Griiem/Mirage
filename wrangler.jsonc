@@ -1,0 +1,5 @@
+{
+  "name": "mirage-proxy",
+  "main": "worker/mirage-proxy.js",
+  "compatibility_date": "2025-06-01"
+}
