@@ -1,4 +1,5 @@
 local HttpService = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 local PROXY_URL = "https://mirage.joshuanfontanaa.workers.dev"
 
@@ -18,11 +19,19 @@ return function()
     Catalog.Categories = {
         { Name = "All", Category = 1 },
         { Name = "Accessories", Category = 11, Kind = "accessory" },
-        { Name = "Hair", Category = 11, Subcategory = 20, Kind = "accessory" },
+        { Name = "Hair", Category = 1, Keyword = "hair", Kind = "accessory", AssetTypes = { [41] = true } },
         { Name = "Classic Shirts", Category = 3, Subcategory = 56, Kind = "shirt" },
         { Name = "Classic T-Shirts", Category = 3, Subcategory = 55, Kind = "tshirt" },
         { Name = "Classic Pants", Category = 3, Subcategory = 57, Kind = "pants" },
-        { Name = "Faces", Category = 4, Subcategory = 10, Kind = "face" },
+        { Name = "Faces", Category = 1, Keyword = "face", Kind = "face", AssetTypes = { [18] = true } },
+    }
+
+    Catalog.Exclusives = {
+        { Name = "Fedoras", Category = 1, Keyword = "sparkle time fedora", Kind = "accessory", RequireKind = "accessory" },
+        { Name = "Valkyries", Category = 1, Keyword = "valkyrie", Kind = "accessory", RequireKind = "accessory" },
+        { Name = "Dominus", Category = 1, Keyword = "dominus", Kind = "accessory", RequireKind = "accessory" },
+        { Name = "Domino Crown", Category = 1, Keyword = "domino crown", Kind = "accessory", RequireKind = "accessory" },
+        { Name = "Headphones", Category = 1, Keyword = "clockwork headphones", Kind = "accessory", RequireKind = "accessory" },
     }
 
     local KIND_BY_ASSET_TYPE = {
@@ -43,6 +52,22 @@ return function()
 
     function Catalog.KindOf(assetType)
         return KIND_BY_ASSET_TYPE[assetType]
+    end
+
+    function Catalog.Lookup(id)
+        local ok, info = pcall(function()
+            return MarketplaceService:GetProductInfo(id, Enum.InfoType.Asset)
+        end)
+
+        if not ok or type(info) ~= "table" then
+            return nil, "GetProductInfo failed (" .. tostring(info) .. ")"
+        end
+
+        return {
+            Id = id,
+            Name = info.Name or "Unknown",
+            Kind = Catalog.KindOf(info.AssetTypeId),
+        }
     end
 
     local function fetch(url)
@@ -77,54 +102,14 @@ return function()
         return flat:sub(1, 80)
     end
 
-    local function buildResult(decoded)
-        local items = {}
+    local function requestPage(params, cursor)
+        local list = table.clone(params)
 
-        for _, item in decoded.data do
-            if type(item.id) == "number" then
-                local kind
-
-                if item.itemType == nil or item.itemType == "Asset" then
-                    kind = Catalog.KindOf(item.assetType)
-                end
-
-                table.insert(items, {
-                    Id = item.id,
-                    Name = item.name or "Unknown",
-                    Kind = kind,
-                    ItemType = item.itemType,
-                    Creator = item.creatorName,
-                })
-            end
+        if cursor and cursor ~= "" then
+            table.insert(list, "Cursor=" .. HttpService:UrlEncode(cursor))
         end
 
-        return {
-            Items = items,
-            NextCursor = decoded.nextPageCursor,
-        }
-    end
-
-    function Catalog.Search(options)
-        local params = {
-            "Category=" .. tostring(options.Category or 1),
-            "Limit=30",
-            "SortType=0",
-            "SortAggregation=5",
-        }
-
-        if options.Subcategory then
-            table.insert(params, "Subcategory=" .. tostring(options.Subcategory))
-        end
-
-        if options.Keyword and options.Keyword ~= "" then
-            table.insert(params, "Keyword=" .. HttpService:UrlEncode(options.Keyword))
-        end
-
-        if options.Cursor and options.Cursor ~= "" then
-            table.insert(params, "Cursor=" .. HttpService:UrlEncode(options.Cursor))
-        end
-
-        local path = "/v1/search/items/details?" .. table.concat(params, "&")
+        local path = "/v1/search/items/details?" .. table.concat(list, "&")
 
         local hosts = {}
 
@@ -156,7 +141,7 @@ return function()
 
             if decoded and type(decoded.data) == "table" then
                 Catalog.ActiveHost = host
-                return buildResult(decoded)
+                return decoded
             end
 
             local reason
@@ -176,6 +161,109 @@ return function()
         end
 
         return nil, table.concat(failures, " | ")
+    end
+
+    local function buildItem(raw)
+        if type(raw.id) ~= "number" then
+            return nil
+        end
+
+        local isBundle = raw.itemType == "Bundle"
+        local kind
+
+        if not isBundle then
+            kind = Catalog.KindOf(raw.assetType)
+        end
+
+        return {
+            Id = raw.id,
+            Name = raw.name or "Unknown",
+            Kind = kind,
+            IsBundle = isBundle,
+        }
+    end
+
+    local function accepts(item, raw, options)
+        if options.AssetTypes then
+            if item.IsBundle then
+                return false
+            end
+
+            if raw.assetType ~= nil and not options.AssetTypes[raw.assetType] then
+                return false
+            end
+        end
+
+        if options.RequireKind then
+            if item.IsBundle then
+                return false
+            end
+
+            if item.Kind ~= nil and item.Kind ~= options.RequireKind then
+                return false
+            end
+        end
+
+        return true
+    end
+
+    function Catalog.Search(options)
+        local params = {
+            "Category=" .. tostring(options.Category or 1),
+            "Limit=30",
+            "SortType=0",
+            "SortAggregation=5",
+        }
+
+        if options.Subcategory then
+            table.insert(params, "Subcategory=" .. tostring(options.Subcategory))
+        end
+
+        if options.Keyword and options.Keyword ~= "" then
+            table.insert(params, "Keyword=" .. HttpService:UrlEncode(options.Keyword))
+        end
+
+        local filtering = options.AssetTypes ~= nil or options.RequireKind ~= nil
+        local maxPages = filtering and 4 or 1
+        local collected = {}
+        local cursor = options.Cursor
+        local lastError
+
+        for _ = 1, maxPages do
+            local decoded, failure = requestPage(params, cursor)
+
+            if not decoded then
+                lastError = failure
+                break
+            end
+
+            for _, raw in decoded.data do
+                local item = buildItem(raw)
+
+                if item and accepts(item, raw, options) then
+                    table.insert(collected, item)
+                end
+            end
+
+            cursor = decoded.nextPageCursor
+
+            if not cursor or cursor == "" or #collected >= 12 then
+                break
+            end
+        end
+
+        if #collected == 0 and lastError then
+            return nil, lastError
+        end
+
+        if cursor == "" then
+            cursor = nil
+        end
+
+        return {
+            Items = collected,
+            NextCursor = cursor,
+        }
     end
 
     return Catalog
