@@ -9,6 +9,7 @@ local BRANCH = "main"
 
 local RAW_URL = ("https://raw.githubusercontent.com/%s/%s/%s/"):format(OWNER, REPO, BRANCH)
 local API_URL = ("https://api.github.com/repos/%s/%s/contents/tabs"):format(OWNER, REPO)
+local CORE_PATH = "core/SkinEngine.luau"
 
 local Window = WindUI:CreateWindow({
     Title = "",
@@ -49,7 +50,7 @@ Window:Tag({
 })
 
 local coreOk, Skins = pcall(function()
-    local source = game:HttpGet(RAW_URL .. "core/Skins.luau")
+    local source = game:HttpGet(RAW_URL .. CORE_PATH)
     assert(source and #source > 0, "Empty source")
 
     local chunk, compileError = loadstring(source)
@@ -59,13 +60,15 @@ local coreOk, Skins = pcall(function()
 end)
 
 if not coreOk or type(Skins) ~= "table" then
-    warn("[Mirage] Failed to load core/Skins: " .. tostring(Skins))
+    local reason = tostring(Skins)
+
+    warn("[Mirage] Failed to load " .. CORE_PATH .. " from " .. RAW_URL .. CORE_PATH .. ": " .. reason)
 
     WindUI:Notify({
         Title = "Mirage",
-        Content = "Não consegui carregar o sistema de skins.",
+        Content = "Could not load " .. CORE_PATH .. ": " .. reason:sub(1, 120),
         Icon = "x",
-        Duration = 5,
+        Duration = 8,
     })
     return
 end
@@ -108,9 +111,11 @@ local listed, files = pcall(function()
 end)
 
 if not listed or type(files) ~= "table" then
+    warn("[Mirage] Failed to list tabs: " .. tostring(files))
+
     WindUI:Notify({
         Title = "Mirage",
-        Content = "Não consegui listar as tabs.",
+        Content = "Could not list the tabs folder.",
         Icon = "x",
         Duration = 5,
     })
@@ -139,7 +144,7 @@ task.spawn(function()
     if not Skins.HasFs then
         WindUI:Notify({
             Title = "Mirage",
-            Content = "Seu executor não suporta writefile/getcustomasset.",
+            Content = "Your executor does not support writefile/getcustomasset.",
             Icon = "x",
             Duration = 6,
         })
@@ -153,7 +158,7 @@ task.spawn(function()
     if not ok or not loaded then
         WindUI:Notify({
             Title = "Mirage",
-            Content = "Não consegui ler skins/index.json.",
+            Content = "Could not read skins/index.json.",
             Icon = "x",
             Duration = 5,
         })
