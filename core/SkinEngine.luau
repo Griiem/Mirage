@@ -362,13 +362,17 @@ return function(RAW_URL)
             return
         end
 
-        local assets = loadAssets(player)
+        local assets = loadAssets(player) or {}
 
         if player.Character ~= character or not Skins.Enabled or not Skins.Alive then
             return
         end
 
-        if not assets or next(assets) == nil then
+        local entry = entryFor(player)
+        local headless = entry ~= nil and entry.headless == true
+        local hideOwn = entry ~= nil and entry.clearAccessories == true
+
+        if next(assets) == nil and not headless and not hideOwn then
             restore(character)
             return
         end
@@ -378,7 +382,6 @@ return function(RAW_URL)
         local undo = {}
         Skins.Applied[character] = undo
 
-        local entry = entryFor(player)
         local status = Skins.Status[tostring(player.UserId)]
 
         if status then
@@ -429,9 +432,27 @@ return function(RAW_URL)
             end
         end
 
+        if headless then
+            local head = character:FindFirstChild("Head")
+
+            if head and head:IsA("BasePart") then
+                setProperty(undo, head, "Transparency", 1, false)
+
+                local faceDecal = head:FindFirstChild("face")
+
+                if faceDecal and faceDecal:IsA("Decal") then
+                    setProperty(undo, faceDecal, "Transparency", 1, false)
+                end
+
+                if status then
+                    table.insert(status.Applied, "headless")
+                end
+            end
+        end
+
         local humanoid = character:FindFirstChildOfClass("Humanoid")
 
-        if humanoid and entry and entry.clearAccessories == true then
+        if humanoid and hideOwn then
             for _, child in character:GetChildren() do
                 if child:IsA("Accessory") then
                     child.Parent = nil
