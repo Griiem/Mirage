@@ -78,6 +78,16 @@ local Mirage = {
     Skins = Skins,
 }
 
+function Mirage.Require(path)
+    local source = game:HttpGet(RAW_URL .. path)
+    assert(source and #source > 0, "Empty source for " .. path)
+
+    local chunk, compileError = loadstring(source)
+    assert(chunk, compileError or "Compilation failed for " .. path)
+
+    return chunk()
+end
+
 local function loadTab(name)
     local url = RAW_URL .. "tabs/" .. name .. ".luau"
 
@@ -100,6 +110,14 @@ local function loadTab(name)
 
     if not success then
         warn("[Mirage] Failed to load tab '" .. name .. "': " .. tostring(err))
+
+        WindUI:Notify({
+            Title = "Mirage",
+            Content = "Tab '" .. name .. "' failed: " .. tostring(err):sub(1, 120),
+            Icon = "x",
+            Duration = 8,
+        })
+
         return false
     end
 
@@ -137,6 +155,10 @@ for _, file in ipairs(files) do
 end
 
 Window:OnDestroy(function()
+    if Mirage.CatalogUI then
+        Mirage.CatalogUI:Destroy()
+    end
+
     Skins:Cleanup()
 end)
 
