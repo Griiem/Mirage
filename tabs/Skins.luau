@@ -1,3 +1,5 @@
+local Players = game:GetService("Players")
+
 return function(Window, WindUI, Mirage)
 
 local Skins = Mirage.Skins
@@ -42,6 +44,24 @@ Tab:Button({
                 Duration = 4,
             })
         end)
+    end,
+})
+
+Tab:Button({
+    Title = "My status",
+    Desc = "Shows what happened with your own skin (also printed in the console)",
+
+    Callback = function()
+        local report = Skins:Report(Players.LocalPlayer)
+
+        warn("[Mirage] Status: " .. report)
+
+        WindUI:Notify({
+            Title = "Mirage status",
+            Content = report,
+            Icon = "info",
+            Duration = 10,
+        })
     end,
 })
 
