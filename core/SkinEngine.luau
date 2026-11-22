@@ -1,5 +1,6 @@
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
+local InsertService = game:GetService("InsertService")
 
 return function(RAW_URL)
     local Skins = {
@@ -8,6 +9,8 @@ return function(RAW_URL)
         Index = {},
         Assets = {},
         Status = {},
+        Objects = {},
+        LocalLoadout = nil,
         Applied = setmetatable({}, { __mode = "k" }),
         Watched = {},
         Tokens = {},
@@ -18,10 +21,19 @@ return function(RAW_URL)
     local CACHE_ROOT = "Mirage"
     local CACHE = "Mirage/cache"
 
+    local KINDS = { "shirt", "pants", "tshirt", "face" }
+
     local SLOTS = {
         shirt = { Class = "Shirt", Prop = "ShirtTemplate" },
         pants = { Class = "Pants", Prop = "PantsTemplate" },
         tshirt = { Class = "ShirtGraphic", Prop = "Graphic" },
+    }
+
+    local CATALOG_CLASS = {
+        shirt = { "Shirt", "ShirtTemplate" },
+        pants = { "Pants", "PantsTemplate" },
+        tshirt = { "ShirtGraphic", "Graphic" },
+        face = { "Decal", "Texture" },
     }
 
     local HasFs = type(writefile) == "function"
@@ -39,6 +51,38 @@ return function(RAW_URL)
         local c = signal:Connect(fn)
         table.insert(Skins.Connections, c)
         return c
+    end
+
+    local function entryFor(player)
+        local base = Skins.Index[tostring(player.UserId)]
+
+        if type(base) ~= "table" then
+            base = nil
+        end
+
+        if player ~= Players.LocalPlayer then
+            return base
+        end
+
+        local merged = {}
+
+        if base then
+            for key, value in base do
+                merged[key] = value
+            end
+        end
+
+        if Skins.LocalLoadout then
+            for key, value in Skins.LocalLoadout do
+                merged[key] = value
+            end
+        end
+
+        if next(merged) == nil then
+            return nil
+        end
+
+        return merged
     end
 
     local function prepareCache()
@@ -121,16 +165,99 @@ return function(RAW_URL)
         return asset
     end
 
-    local function loadAssets(userId)
-        local key = tostring(userId)
+    local function findClass(objects, className)
+        for _, obj in objects do
+            if typeof(obj) == "Instance" then
+                if obj:IsA(className) then
+                    return obj
+                end
+
+                local inner = obj:FindFirstChildWhichIsA(className, true)
+
+                if inner then
+                    return inner
+                end
+            end
+        end
+
+        return nil
+    end
+
+    local function loadObject(id, className)
+        local cacheKey = className .. ":" .. tostring(id)
+
+        if Skins.Objects[cacheKey] then
+            return Skins.Objects[cacheKey]
+        end
+
+        local found
+        local reason = "asset " .. tostring(id) .. " could not be loaded"
+
+        local ok, objects = pcall(function()
+            return game:GetObjects("rbxassetid://" .. tostring(id))
+        end)
+
+        if ok and type(objects) == "table" then
+            found = findClass(objects, className)
+
+            if not found then
+                reason = "asset " .. tostring(id) .. " has no " .. className
+            end
+        else
+            reason = "GetObjects failed (" .. tostring(objects) .. ")"
+        end
+
+        if not found then
+            local okLoad, model = pcall(function()
+                return InsertService:LoadAsset(tonumber(id))
+            end)
+
+            if okLoad and model then
+                found = model:FindFirstChildWhichIsA(className, true)
+
+                if found then
+                    found.Parent = nil
+                end
+
+                model:Destroy()
+            end
+        end
+
+        if found then
+            Skins.Objects[cacheKey] = found
+            return found
+        end
+
+        return nil, reason
+    end
+
+    local function catalogTemplate(kind, id)
+        local info = CATALOG_CLASS[kind]
+        local obj, reason = loadObject(id, info[1])
+
+        if not obj then
+            return nil, reason
+        end
+
+        local value = obj[info[2]]
+
+        if type(value) ~= "string" or value == "" then
+            return nil, "asset " .. tostring(id) .. " has no " .. info[2]
+        end
+
+        return value
+    end
+
+    local function loadAssets(player)
+        local key = tostring(player.UserId)
 
         if Skins.Assets[key] then
             return Skins.Assets[key]
         end
 
-        local entry = Skins.Index[key]
+        local entry = entryFor(player)
 
-        if type(entry) ~= "table" then
+        if not entry then
             return nil
         end
 
@@ -139,19 +266,51 @@ return function(RAW_URL)
 
         local assets = {}
 
-        for kind in SLOTS do
-            if entry[kind] ~= nil then
+        for _, kind in KINDS do
+            local value = entry[kind]
+
+            if value ~= nil then
                 table.insert(status.Listed, kind)
 
-                local asset, reason = download(key, kind, entry[kind])
+                local result, reason
 
-                if asset then
-                    assets[kind] = asset
+                if type(value) == "string" then
+                    result, reason = download(key, kind, value)
+                elseif type(value) == "number" then
+                    result, reason = catalogTemplate(kind, value)
+                else
+                    reason = "unsupported value in the entry"
+                end
+
+                if result then
+                    assets[kind] = result
                     table.insert(status.Loaded, kind)
                 else
                     status.Failed[kind] = reason
                     log(key, kind, reason)
                 end
+            end
+        end
+
+        if type(entry.accessories) == "table" then
+            local list = {}
+
+            for _, id in entry.accessories do
+                table.insert(status.Listed, "accessory")
+
+                local obj, reason = loadObject(id, "Accessory")
+
+                if obj then
+                    table.insert(list, obj)
+                    table.insert(status.Loaded, "accessory")
+                else
+                    status.Failed["accessory " .. tostring(id)] = reason
+                    log(key, "accessory", reason)
+                end
+            end
+
+            if #list > 0 then
+                assets.accessories = list
             end
         end
 
@@ -174,6 +333,28 @@ return function(RAW_URL)
         end
     end
 
+    local function setProperty(undo, inst, prop, value, created)
+        local old = inst[prop]
+
+        inst[prop] = value
+
+        local guard = inst:GetPropertyChangedSignal(prop):Connect(function()
+            if Skins.Enabled and Skins.Alive and inst[prop] ~= value then
+                inst[prop] = value
+            end
+        end)
+
+        table.insert(undo, function()
+            guard:Disconnect()
+
+            if created then
+                inst:Destroy()
+            elseif inst.Parent then
+                inst[prop] = old
+            end
+        end)
+    end
+
     local function apply(player)
         local character = player.Character
 
@@ -181,13 +362,14 @@ return function(RAW_URL)
             return
         end
 
-        local assets = loadAssets(player.UserId)
+        local assets = loadAssets(player)
 
-        if not assets or next(assets) == nil then
+        if player.Character ~= character or not Skins.Enabled or not Skins.Alive then
             return
         end
 
-        if player.Character ~= character or not Skins.Enabled or not Skins.Alive then
+        if not assets or next(assets) == nil then
+            restore(character)
             return
         end
 
@@ -196,6 +378,7 @@ return function(RAW_URL)
         local undo = {}
         Skins.Applied[character] = undo
 
+        local entry = entryFor(player)
         local status = Skins.Status[tostring(player.UserId)]
 
         if status then
@@ -207,39 +390,77 @@ return function(RAW_URL)
 
             if asset then
                 local inst = character:FindFirstChildOfClass(slot.Class)
+                local created = false
 
-                if inst then
-                    local old = inst[slot.Prop]
-
-                    inst[slot.Prop] = asset
-
-                    table.insert(undo, function()
-                        if inst.Parent then
-                            inst[slot.Prop] = old
-                        end
-                    end)
-                else
+                if not inst then
                     inst = Instance.new(slot.Class)
-                    inst[slot.Prop] = asset
                     inst.Parent = character
-
-                    table.insert(undo, function()
-                        inst:Destroy()
-                    end)
+                    created = true
                 end
 
-                local guard = inst:GetPropertyChangedSignal(slot.Prop):Connect(function()
-                    if Skins.Enabled and Skins.Alive and inst[slot.Prop] ~= asset then
-                        inst[slot.Prop] = asset
-                    end
-                end)
-
-                table.insert(undo, function()
-                    guard:Disconnect()
-                end)
+                setProperty(undo, inst, slot.Prop, asset, created)
 
                 if status then
                     table.insert(status.Applied, kind)
+                end
+            end
+        end
+
+        if assets.face then
+            local head = character:FindFirstChild("Head")
+
+            if head then
+                local decal = head:FindFirstChild("face")
+                local created = false
+
+                if not (decal and decal:IsA("Decal")) then
+                    decal = Instance.new("Decal")
+                    decal.Name = "face"
+                    decal.Face = Enum.NormalId.Front
+                    decal.Parent = head
+                    created = true
+                end
+
+                setProperty(undo, decal, "Texture", assets.face, created)
+
+                if status then
+                    table.insert(status.Applied, "face")
+                end
+            end
+        end
+
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+        if humanoid and entry and entry.clearAccessories == true then
+            for _, child in character:GetChildren() do
+                if child:IsA("Accessory") then
+                    child.Parent = nil
+
+                    table.insert(undo, function()
+                        child.Parent = character
+                    end)
+                end
+            end
+        end
+
+        if humanoid and assets.accessories then
+            for _, template in assets.accessories do
+                local clone = template:Clone()
+
+                local added = pcall(function()
+                    humanoid:AddAccessory(clone)
+                end)
+
+                if added then
+                    table.insert(undo, function()
+                        clone:Destroy()
+                    end)
+
+                    if status then
+                        table.insert(status.Applied, "accessory")
+                    end
+                else
+                    clone:Destroy()
                 end
             end
         end
@@ -262,6 +483,14 @@ return function(RAW_URL)
         end
     end
 
+    local function safeApply(player)
+        local ok, err = pcall(apply, player)
+
+        if not ok then
+            log("Apply error:", tostring(err))
+        end
+    end
+
     local function schedule(player)
         local token = (Skins.Tokens[player] or 0) + 1
         Skins.Tokens[player] = token
@@ -279,7 +508,7 @@ return function(RAW_URL)
                 return
             end
 
-            apply(player)
+            safeApply(player)
 
             task.wait(3)
 
@@ -287,7 +516,7 @@ return function(RAW_URL)
                 return
             end
 
-            apply(player)
+            safeApply(player)
         end)
     end
 
@@ -296,7 +525,7 @@ return function(RAW_URL)
             return
         end
 
-        if not Skins.Index[tostring(player.UserId)] then
+        if not entryFor(player) then
             return
         end
 
@@ -311,22 +540,42 @@ return function(RAW_URL)
         end
     end
 
+    function Skins:SetLocalLoadout(loadout)
+        Skins.LocalLoadout = loadout
+
+        local player = Players.LocalPlayer
+        local key = tostring(player.UserId)
+
+        Skins.Assets[key] = nil
+        Skins.Status[key] = nil
+
+        if not Skins.Enabled then
+            return
+        end
+
+        if Skins.Watched[player] then
+            schedule(player)
+        else
+            watch(player)
+        end
+    end
+
     function Skins:Report(player)
         local key = tostring(player.UserId)
 
-        if type(Skins.Index[key]) ~= "table" then
-            return "No entry for user ID " .. key .. " in skins/index.json"
+        if not entryFor(player) then
+            return "No entry for user ID " .. key .. " in skins/index.json and no local loadout"
         end
 
         local status = Skins.Status[key]
 
         if not status then
-            return "Entry found for " .. key .. " but no download was attempted yet (character not loaded?)"
+            return "Entry found for " .. key .. " but no load was attempted yet (character not loaded?)"
         end
 
         local lines = {
             "Listed: " .. (#status.Listed > 0 and table.concat(status.Listed, ", ") or "none"),
-            "Downloaded: " .. (#status.Loaded > 0 and table.concat(status.Loaded, ", ") or "none"),
+            "Loaded: " .. (#status.Loaded > 0 and table.concat(status.Loaded, ", ") or "none"),
             "Applied: " .. (#status.Applied > 0 and table.concat(status.Applied, ", ") or "none"),
         }
 
@@ -341,7 +590,7 @@ return function(RAW_URL)
         local n = 0
 
         for _, player in Players:GetPlayers() do
-            if Skins.Index[tostring(player.UserId)] then
+            if entryFor(player) then
                 n += 1
             end
         end
@@ -361,7 +610,7 @@ return function(RAW_URL)
         table.clear(Skins.Status)
 
         for _, player in Players:GetPlayers() do
-            if Skins.Index[tostring(player.UserId)] then
+            if entryFor(player) then
                 if Skins.Watched[player] then
                     schedule(player)
                 else
@@ -380,7 +629,7 @@ return function(RAW_URL)
 
         if state then
             for _, player in Players:GetPlayers() do
-                if Skins.Index[tostring(player.UserId)] then
+                if entryFor(player) then
                     if Skins.Watched[player] then
                         schedule(player)
                     else
