@@ -1,5 +1,6 @@
 {
-  "name": "mirage-proxy",
+  // wrangler.jsonc
+  "name": "mirage",
   "main": "worker/mirage-proxy.js",
   "compatibility_date": "2025-06-01"
 }
