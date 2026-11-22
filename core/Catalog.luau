@@ -1,12 +1,17 @@
 local HttpService = game:GetService("HttpService")
 
+local PROXY_URL = "https://mirage.joshuanfontanaa.workers.dev"
+
 return function()
     local Catalog = {}
 
-    Catalog.Hosts = {
-        "https://catalog.roblox.com",
-        "https://catalog.roproxy.com",
-    }
+    Catalog.Hosts = {}
+
+    if PROXY_URL ~= "" then
+        table.insert(Catalog.Hosts, (PROXY_URL:gsub("/+$", "")))
+    end
+
+    table.insert(Catalog.Hosts, "https://catalog.roblox.com")
 
     Catalog.ActiveHost = nil
 
