@@ -7,6 +7,7 @@ return function(RAW_URL)
         Alive = true,
         Index = {},
         Assets = {},
+        Status = {},
         Applied = setmetatable({}, { __mode = "k" }),
         Watched = {},
         Tokens = {},
@@ -29,6 +30,10 @@ return function(RAW_URL)
         and type(makefolder) == "function"
 
     Skins.HasFs = HasFs
+
+    local function log(...)
+        warn("[Mirage]", ...)
+    end
 
     local function connect(signal, fn)
         local c = signal:Connect(fn)
@@ -69,12 +74,18 @@ return function(RAW_URL)
             return result
         end
 
+        log("Failed to read skins/index.json:", tostring(result))
+
         return nil
     end
 
     local function download(userId, kind, fileName)
-        if not HasFs or type(fileName) ~= "string" then
-            return nil
+        if type(fileName) ~= "string" then
+            return nil, "no file name in index.json"
+        end
+
+        if not HasFs then
+            return nil, "executor has no file functions"
         end
 
         local url = ("%sskins/%s/%s?t=%d"):format(RAW_URL, userId, fileName, os.time())
@@ -83,25 +94,31 @@ return function(RAW_URL)
             return game:HttpGet(url)
         end)
 
-        if not ok or type(body) ~= "string" or body:sub(2, 4) ~= "PNG" then
-            return nil
+        if not ok then
+            return nil, "HttpGet failed for " .. url .. " (" .. tostring(body) .. ")"
+        end
+
+        if type(body) ~= "string" or body:sub(2, 4) ~= "PNG" then
+            return nil, "not a valid PNG at " .. url
         end
 
         Skins.Counter += 1
 
         local path = ("%s/%s_%s_%d.png"):format(CACHE, userId, kind, Skins.Counter)
 
-        if not pcall(writefile, path, body) then
-            return nil
+        local wrote, writeErr = pcall(writefile, path, body)
+
+        if not wrote then
+            return nil, "writefile failed (" .. tostring(writeErr) .. ")"
         end
 
         local gotAsset, asset = pcall(getcustomasset, path)
 
-        if gotAsset and asset then
-            return asset
+        if not gotAsset or not asset then
+            return nil, "getcustomasset failed (" .. tostring(asset) .. ")"
         end
 
-        return nil
+        return asset
     end
 
     local function loadAssets(userId)
@@ -117,13 +134,24 @@ return function(RAW_URL)
             return nil
         end
 
+        local status = { Listed = {}, Loaded = {}, Failed = {}, Applied = {} }
+        Skins.Status[key] = status
+
         local assets = {}
 
         for kind in SLOTS do
-            local asset = download(key, kind, entry[kind])
+            if entry[kind] ~= nil then
+                table.insert(status.Listed, kind)
 
-            if asset then
-                assets[kind] = asset
+                local asset, reason = download(key, kind, entry[kind])
+
+                if asset then
+                    assets[kind] = asset
+                    table.insert(status.Loaded, kind)
+                else
+                    status.Failed[kind] = reason
+                    log(key, kind, reason)
+                end
             end
         end
 
@@ -168,6 +196,12 @@ return function(RAW_URL)
         local undo = {}
         Skins.Applied[character] = undo
 
+        local status = Skins.Status[tostring(player.UserId)]
+
+        if status then
+            table.clear(status.Applied)
+        end
+
         for kind, slot in SLOTS do
             local asset = assets[kind]
 
@@ -192,6 +226,20 @@ return function(RAW_URL)
                     table.insert(undo, function()
                         inst:Destroy()
                     end)
+                end
+
+                local guard = inst:GetPropertyChangedSignal(slot.Prop):Connect(function()
+                    if Skins.Enabled and Skins.Alive and inst[slot.Prop] ~= asset then
+                        inst[slot.Prop] = asset
+                    end
+                end)
+
+                table.insert(undo, function()
+                    guard:Disconnect()
+                end)
+
+                if status then
+                    table.insert(status.Applied, kind)
                 end
             end
         end
@@ -263,6 +311,32 @@ return function(RAW_URL)
         end
     end
 
+    function Skins:Report(player)
+        local key = tostring(player.UserId)
+
+        if type(Skins.Index[key]) ~= "table" then
+            return "No entry for user ID " .. key .. " in skins/index.json"
+        end
+
+        local status = Skins.Status[key]
+
+        if not status then
+            return "Entry found for " .. key .. " but no download was attempted yet (character not loaded?)"
+        end
+
+        local lines = {
+            "Listed: " .. (#status.Listed > 0 and table.concat(status.Listed, ", ") or "none"),
+            "Downloaded: " .. (#status.Loaded > 0 and table.concat(status.Loaded, ", ") or "none"),
+            "Applied: " .. (#status.Applied > 0 and table.concat(status.Applied, ", ") or "none"),
+        }
+
+        for kind, reason in status.Failed do
+            table.insert(lines, "Failed " .. kind .. ": " .. reason)
+        end
+
+        return table.concat(lines, " | ")
+    end
+
     function Skins:Count()
         local n = 0
 
@@ -284,6 +358,7 @@ return function(RAW_URL)
 
         Skins.Index = index
         table.clear(Skins.Assets)
+        table.clear(Skins.Status)
 
         for _, player in Players:GetPlayers() do
             if Skins.Index[tostring(player.UserId)] then
@@ -367,6 +442,7 @@ return function(RAW_URL)
         table.clear(Skins.Watched)
         table.clear(Skins.Tokens)
         table.clear(Skins.Assets)
+        table.clear(Skins.Status)
     end
 
     return Skins
