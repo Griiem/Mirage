@@ -17,6 +17,7 @@ return function(Mirage, WindUI)
         Muted = Color3.fromRGB(144, 150, 176),
         Good = Color3.fromRGB(88, 222, 148),
         Bad = Color3.fromRGB(255, 96, 110),
+        Gold = Color3.fromRGB(255, 205, 80),
     }
 
     local KIND_LABELS = {
@@ -27,9 +28,11 @@ return function(Mirage, WindUI)
         accessory = "Accessory",
     }
 
+    local ITEM_KINDS = { "shirt", "pants", "tshirt", "face" }
+
     local UI = { Connections = {}, Destroyed = false }
 
-    local state = { loadout = {}, names = {} }
+    local state = { loadout = {}, names = {}, favorites = {}, outfits = {} }
 
     local function notify(content, icon)
         WindUI:Notify({
@@ -103,8 +106,46 @@ return function(Mirage, WindUI)
         return create("TextButton", props, { corner(8) })
     end
 
+    local function textBox(props)
+        props.BackgroundColor3 = COLORS.Panel
+        props.BorderSizePixel = 0
+        props.ClearTextOnFocus = false
+        props.PlaceholderColor3 = COLORS.Muted
+        props.TextColor3 = COLORS.Text
+        props.TextSize = 14
+        props.Font = Enum.Font.Gotham
+        props.TextXAlignment = Enum.TextXAlignment.Left
+
+        return create("TextBox", props, {
+            corner(8),
+            create("UIPadding", { PaddingLeft = UDim.new(0, 10) }),
+        })
+    end
+
     local function thumb(id)
         return ("rbxthumb://type=Asset&id=%d&w=150&h=150"):format(id)
+    end
+
+    local function trim(text)
+        return (text:gsub("^%s*(.-)%s*$", "%1"))
+    end
+
+    local function cloneLoadout(source)
+        local copy = {}
+
+        if type(source) ~= "table" then
+            return copy
+        end
+
+        for key, value in source do
+            if type(value) == "table" then
+                copy[key] = table.clone(value)
+            else
+                copy[key] = value
+            end
+        end
+
+        return copy
     end
 
     local function loadState()
@@ -123,6 +164,8 @@ return function(Mirage, WindUI)
         if ok and type(decoded) == "table" then
             state.loadout = type(decoded.loadout) == "table" and decoded.loadout or {}
             state.names = type(decoded.names) == "table" and decoded.names or {}
+            state.favorites = type(decoded.favorites) == "table" and decoded.favorites or {}
+            state.outfits = type(decoded.outfits) == "table" and decoded.outfits or {}
         end
     end
 
@@ -140,23 +183,9 @@ return function(Mirage, WindUI)
         end)
     end
 
-    local function copyLoadout()
-        local copy = {}
-
-        for key, value in state.loadout do
-            if type(value) == "table" then
-                copy[key] = table.clone(value)
-            else
-                copy[key] = value
-            end
-        end
-
-        return copy
-    end
-
     local function commit()
         saveState()
-        Skins:SetLocalLoadout(copyLoadout())
+        Skins:SetLocalLoadout(cloneLoadout(state.loadout))
     end
 
     local function isEquipped(kind, id)
@@ -194,6 +223,28 @@ return function(Mirage, WindUI)
         end
 
         commit()
+    end
+
+    local function findFavorite(id)
+        for index, favorite in state.favorites do
+            if favorite.id == id then
+                return index
+            end
+        end
+
+        return nil
+    end
+
+    local function toggleFavorite(item, kind)
+        local index = findFavorite(item.Id)
+
+        if index then
+            table.remove(state.favorites, index)
+        else
+            table.insert(state.favorites, { id = item.Id, name = item.Name, kind = kind })
+        end
+
+        saveState()
     end
 
     local gui = create("ScreenGui", {
@@ -286,10 +337,6 @@ return function(Mirage, WindUI)
         Parent = titleBar,
     })
 
-    closeButton.MouseButton1Click:Connect(function()
-        gui.Enabled = false
-    end)
-
     local dragging = false
     local dragStart
     local startPosition
@@ -326,12 +373,15 @@ return function(Mirage, WindUI)
         end
     end))
 
-    local sidebar = create("Frame", {
+    local sidebar = create("ScrollingFrame", {
         Name = "Sidebar",
         Position = UDim2.fromOffset(10, 52),
         Size = UDim2.new(0, 160, 1, -62),
         BackgroundColor3 = COLORS.Panel,
         BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
         Parent = main,
     }, {
         corner(8),
@@ -357,23 +407,12 @@ return function(Mirage, WindUI)
         Parent = content,
     })
 
-    local searchBox = create("TextBox", {
+    local searchBox = textBox({
         Name = "Search",
         Size = UDim2.new(1, -92, 0, 34),
-        BackgroundColor3 = COLORS.Panel,
-        BorderSizePixel = 0,
-        ClearTextOnFocus = false,
         PlaceholderText = "Search the catalog...",
-        PlaceholderColor3 = COLORS.Muted,
         Text = "",
-        TextColor3 = COLORS.Text,
-        TextSize = 14,
-        Font = Enum.Font.Gotham,
-        TextXAlignment = Enum.TextXAlignment.Left,
         Parent = browse,
-    }, {
-        corner(8),
-        create("UIPadding", { PaddingLeft = UDim.new(0, 10) }),
     })
 
     local searchButton = styledButton({
@@ -409,6 +448,7 @@ return function(Mirage, WindUI)
         Size = UDim2.new(1, 0, 1, -82),
         Text = "",
         TextColor3 = COLORS.Muted,
+        TextWrapped = true,
         ZIndex = 5,
         Parent = browse,
     })
@@ -422,7 +462,7 @@ return function(Mirage, WindUI)
         Parent = browse,
     })
 
-    label({
+    local infoLabel = label({
         Size = UDim2.new(1, -130, 1, 0),
         Text = "Click an item to equip or unequip it (local only)",
         TextSize = 12,
@@ -435,6 +475,24 @@ return function(Mirage, WindUI)
         Text = "Load more",
         Position = UDim2.new(1, -120, 0.5, -14),
         Size = UDim2.fromOffset(120, 28),
+        Visible = false,
+        Parent = footer,
+    })
+
+    local idBox = textBox({
+        Position = UDim2.new(0, 0, 0.5, -15),
+        Size = UDim2.new(1, -120, 0, 30),
+        PlaceholderText = "Paste an asset ID to add it to favorites",
+        Text = "",
+        Visible = false,
+        Parent = footer,
+    })
+
+    local addButton = styledButton({
+        Text = "Add by ID",
+        Position = UDim2.new(1, -110, 0.5, -14),
+        Size = UDim2.fromOffset(110, 28),
+        BackgroundColor3 = COLORS.Accent,
         Visible = false,
         Parent = footer,
     })
@@ -496,13 +554,73 @@ return function(Mirage, WindUI)
         Parent = equipped,
     })
 
+    local outfits = create("Frame", {
+        Name = "Outfits",
+        Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1,
+        Visible = false,
+        Parent = content,
+    })
+
+    local outfitName = textBox({
+        Size = UDim2.new(1, -182, 0, 34),
+        PlaceholderText = "Outfit name",
+        Text = "",
+        Parent = outfits,
+    })
+
+    local saveOutfitButton = styledButton({
+        Text = "Save current loadout",
+        Position = UDim2.new(1, -174, 0, 0),
+        Size = UDim2.fromOffset(174, 34),
+        BackgroundColor3 = COLORS.Accent,
+        Parent = outfits,
+    })
+
+    local outfitList = create("ScrollingFrame", {
+        Name = "List",
+        Position = UDim2.fromOffset(0, 42),
+        Size = UDim2.new(1, 0, 1, -42),
+        BackgroundColor3 = COLORS.Panel,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 4,
+        CanvasSize = UDim2.new(),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Parent = outfits,
+    }, {
+        corner(8),
+        padding(8),
+        create("UIListLayout", {
+            Padding = UDim.new(0, 6),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }),
+    })
+
+    local emptyOutfits = label({
+        Position = UDim2.fromOffset(0, 42),
+        Size = UDim2.new(1, 0, 1, -42),
+        Text = "No saved outfits yet",
+        TextColor3 = COLORS.Muted,
+        ZIndex = 5,
+        Parent = outfits,
+    })
+
+    local headlessButton = styledButton({
+        Text = "",
+        Size = UDim2.new(1, 0, 0, 30),
+        Parent = sidebar,
+    })
+
     local cardRefreshers = {}
     local sidebarButtons = {}
     local currentCategory = Catalog.Categories[1]
+    local currentMode = "catalog"
     local nextCursor
     local loading = false
     local searchToken = 0
     local initialized = false
+
+    local showFavorites
 
     local function refreshCards()
         for _, refresh in cardRefreshers do
@@ -515,6 +633,18 @@ return function(Mirage, WindUI)
 
         hideButton.Text = "Hide my current accessories: " .. (on and "ON" or "OFF")
         hideButton.TextColor3 = on and COLORS.Good or COLORS.Text
+    end
+
+    local function updateHeadless()
+        local on = state.loadout.headless == true
+
+        headlessButton.Text = "Headless: " .. (on and "ON" or "OFF")
+        headlessButton.TextColor3 = on and COLORS.Good or COLORS.Text
+    end
+
+    local function refreshFlags()
+        updateHideButton()
+        updateHeadless()
     end
 
     local function renderEquipped()
@@ -579,7 +709,7 @@ return function(Mirage, WindUI)
             end)
         end
 
-        for _, kind in { "shirt", "pants", "tshirt", "face" } do
+        for _, kind in ITEM_KINDS do
             local id = state.loadout[kind]
 
             if id then
@@ -595,8 +725,103 @@ return function(Mirage, WindUI)
         updateHideButton()
     end
 
+    local function outfitItemCount(loadout)
+        local count = 0
+
+        for _, kind in ITEM_KINDS do
+            if loadout[kind] then
+                count += 1
+            end
+        end
+
+        if type(loadout.accessories) == "table" then
+            count += #loadout.accessories
+        end
+
+        return count
+    end
+
+    local function renderOutfits()
+        for _, child in outfitList:GetChildren() do
+            if child:IsA("Frame") then
+                child:Destroy()
+            end
+        end
+
+        for index, outfit in state.outfits do
+            local row = create("Frame", {
+                Size = UDim2.new(1, 0, 0, 48),
+                BackgroundColor3 = COLORS.Card,
+                BorderSizePixel = 0,
+                LayoutOrder = index,
+                Parent = outfitList,
+            }, { corner(8) })
+
+            label({
+                Position = UDim2.fromOffset(12, 5),
+                Size = UDim2.new(1, -190, 0, 20),
+                Text = outfit.name or ("Outfit " .. index),
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd,
+                Parent = row,
+            })
+
+            label({
+                Position = UDim2.fromOffset(12, 25),
+                Size = UDim2.new(1, -190, 0, 16),
+                Text = outfitItemCount(outfit.loadout or {}) .. " item(s)",
+                TextSize = 11,
+                TextColor3 = COLORS.Muted,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = row,
+            })
+
+            local loadButton = styledButton({
+                Text = "Load",
+                Position = UDim2.new(1, -154, 0.5, -14),
+                Size = UDim2.fromOffset(70, 28),
+                BackgroundColor3 = COLORS.Accent,
+                Parent = row,
+            })
+
+            local deleteButton = styledButton({
+                Text = "Delete",
+                Position = UDim2.new(1, -78, 0.5, -14),
+                Size = UDim2.fromOffset(70, 28),
+                Parent = row,
+            })
+
+            loadButton.MouseButton1Click:Connect(function()
+                state.loadout = cloneLoadout(outfit.loadout)
+
+                if type(outfit.names) == "table" then
+                    for key, value in outfit.names do
+                        state.names[key] = value
+                    end
+                end
+
+                commit()
+                refreshFlags()
+                refreshCards()
+                notify("Loaded outfit '" .. tostring(outfit.name) .. "'.", "check")
+            end)
+
+            deleteButton.MouseButton1Click:Connect(function()
+                table.remove(state.outfits, index)
+                saveState()
+                renderOutfits()
+            end)
+        end
+
+        emptyOutfits.Visible = #state.outfits == 0
+    end
+
     local function addCard(item, categoryKind)
         local kind = item.Kind or categoryKind
+
+        if item.IsBundle then
+            kind = nil
+        end
 
         local card = create("TextButton", {
             Name = tostring(item.Id),
@@ -639,9 +864,23 @@ return function(Mirage, WindUI)
             Parent = card,
         })
 
+        local favoriteButton = create("TextButton", {
+            Text = "Fav",
+            AutoButtonColor = false,
+            BackgroundColor3 = COLORS.Background,
+            BackgroundTransparency = 0.2,
+            BorderSizePixel = 0,
+            Font = Enum.Font.GothamBold,
+            TextSize = 11,
+            Position = UDim2.new(1, -38, 0, 8),
+            Size = UDim2.fromOffset(32, 18),
+            ZIndex = 3,
+            Parent = card,
+        }, { corner(6) })
+
         local function refresh()
             if not kind then
-                tag.Text = "Unsupported"
+                tag.Text = item.IsBundle and "Bundle (unsupported)" or "Unsupported"
                 tag.TextColor3 = COLORS.Bad
                 cardStroke.Transparency = 1
             elseif isEquipped(kind, item.Id) then
@@ -653,6 +892,8 @@ return function(Mirage, WindUI)
                 tag.TextColor3 = COLORS.Muted
                 cardStroke.Transparency = 1
             end
+
+            favoriteButton.TextColor3 = findFavorite(item.Id) and COLORS.Gold or COLORS.Muted
         end
 
         refresh()
@@ -667,6 +908,16 @@ return function(Mirage, WindUI)
             toggleEquip(kind, item.Id, item.Name)
             refreshCards()
         end)
+
+        favoriteButton.MouseButton1Click:Connect(function()
+            toggleFavorite(item, kind)
+
+            if currentMode == "favorites" then
+                showFavorites()
+            else
+                refresh()
+            end
+        end)
     end
 
     local function clearGrid()
@@ -679,7 +930,36 @@ return function(Mirage, WindUI)
         table.clear(cardRefreshers)
     end
 
+    showFavorites = function()
+        searchToken += 1
+        loading = false
+        clearGrid()
+        nextCursor = nil
+        loadMore.Visible = false
+
+        local filter = string.lower(trim(searchBox.Text))
+        local shown = 0
+
+        for _, favorite in state.favorites do
+            local name = favorite.name or tostring(favorite.id)
+
+            if filter == "" or string.find(string.lower(name), filter, 1, true) then
+                shown += 1
+
+                addCard({ Id = favorite.id, Name = name, Kind = favorite.kind }, nil)
+            end
+        end
+
+        statusLabel.Visible = shown == 0
+        statusLabel.Text = shown == 0 and "No favorites yet. Use the Fav button on any item, or add one by ID below." or ""
+    end
+
     local function runSearch(reset)
+        if currentMode == "favorites" then
+            showFavorites()
+            return
+        end
+
         if loading and not reset then
             return
         end
@@ -700,7 +980,13 @@ return function(Mirage, WindUI)
         statusLabel.Visible = true
 
         local category = currentCategory
-        local keyword = searchBox.Text
+        local typed = trim(searchBox.Text)
+        local keyword = typed
+
+        if category.Keyword and category.Keyword ~= "" then
+            keyword = typed ~= "" and (typed .. " " .. category.Keyword) or category.Keyword
+        end
+
         local cursor = (not reset) and nextCursor or nil
 
         task.spawn(function()
@@ -709,6 +995,8 @@ return function(Mirage, WindUI)
                 Subcategory = category.Subcategory,
                 Keyword = keyword,
                 Cursor = cursor,
+                AssetTypes = category.AssetTypes,
+                RequireKind = category.RequireKind,
             })
 
             if UI.Destroyed or token ~= searchToken then
@@ -718,7 +1006,7 @@ return function(Mirage, WindUI)
             loading = false
 
             if not result then
-                statusLabel.Text = "Search failed: " .. tostring(reason):sub(1, 120)
+                statusLabel.Text = "Search failed: " .. tostring(reason):sub(1, 140)
                 warn("[Mirage] Catalog search failed: " .. tostring(reason))
                 return
             end
@@ -741,6 +1029,7 @@ return function(Mirage, WindUI)
     local function setView(name)
         browse.Visible = name == "browse"
         equipped.Visible = name == "equipped"
+        outfits.Visible = name == "outfits"
     end
 
     local function highlight(active)
@@ -749,37 +1038,114 @@ return function(Mirage, WindUI)
         end
     end
 
-    for index, category in Catalog.Categories do
+    local function applyMode(mode)
+        currentMode = mode
+
+        local favorites = mode == "favorites"
+
+        infoLabel.Visible = not favorites
+        idBox.Visible = favorites
+        addButton.Visible = favorites
+        searchBox.PlaceholderText = favorites and "Filter your favorites..." or "Search the catalog..."
+
+        if favorites then
+            loadMore.Visible = false
+        end
+    end
+
+    local order = 0
+
+    local function nextOrder()
+        order += 1
+
+        return order
+    end
+
+    local function section(text)
+        label({
+            Size = UDim2.new(1, 0, 0, 18),
+            Text = text,
+            TextSize = 11,
+            TextColor3 = COLORS.Muted,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            LayoutOrder = nextOrder(),
+            Parent = sidebar,
+        })
+    end
+
+    local function sidebarButton(text)
         local button = styledButton({
-            Text = category.Name,
-            Size = UDim2.new(1, 0, 0, 32),
-            LayoutOrder = index,
+            Text = text,
+            Size = UDim2.new(1, 0, 0, 30),
+            LayoutOrder = nextOrder(),
             Parent = sidebar,
         })
 
         table.insert(sidebarButtons, button)
 
-        button.MouseButton1Click:Connect(function()
-            currentCategory = category
-            setView("browse")
-            highlight(button)
-            runSearch(true)
-        end)
+        return button
     end
 
-    local equippedButton = styledButton({
-        Text = "Equipped",
-        Size = UDim2.new(1, 0, 0, 32),
-        LayoutOrder = 100,
-        Parent = sidebar,
-    })
+    local function addCategoryButtons(list)
+        for _, category in list do
+            local button = sidebarButton(category.Name)
 
-    table.insert(sidebarButtons, equippedButton)
+            button.MouseButton1Click:Connect(function()
+                currentCategory = category
+                applyMode("catalog")
+                setView("browse")
+                highlight(button)
+                runSearch(true)
+            end)
+        end
+    end
+
+    section("CATALOG")
+    addCategoryButtons(Catalog.Categories)
+
+    section("EXCLUSIVES")
+    addCategoryButtons(Catalog.Exclusives)
+
+    headlessButton.LayoutOrder = nextOrder()
+
+    section("YOURS")
+
+    local favoritesButton = sidebarButton("Favorites")
+    local outfitsButton = sidebarButton("Outfits")
+    local equippedButton = sidebarButton("Equipped")
+
+    favoritesButton.MouseButton1Click:Connect(function()
+        applyMode("favorites")
+        setView("browse")
+        highlight(favoritesButton)
+        showFavorites()
+    end)
+
+    outfitsButton.MouseButton1Click:Connect(function()
+        setView("outfits")
+        highlight(outfitsButton)
+        renderOutfits()
+    end)
 
     equippedButton.MouseButton1Click:Connect(function()
         setView("equipped")
         highlight(equippedButton)
         renderEquipped()
+    end)
+
+    headlessButton.MouseButton1Click:Connect(function()
+        if state.loadout.headless == true then
+            state.loadout.headless = nil
+        else
+            state.loadout.headless = true
+        end
+
+        commit()
+        updateHeadless()
+    end)
+
+    closeButton.MouseButton1Click:Connect(function()
+        gui.Enabled = false
     end)
 
     searchButton.MouseButton1Click:Connect(function()
@@ -796,6 +1162,96 @@ return function(Mirage, WindUI)
 
     loadMore.MouseButton1Click:Connect(function()
         runSearch(false)
+    end)
+
+    addButton.MouseButton1Click:Connect(function()
+        local digits = idBox.Text:match("%d+")
+        local id = digits and tonumber(digits)
+
+        if not id then
+            notify("Paste a numeric asset ID.", "x")
+            return
+        end
+
+        task.spawn(function()
+            local item, reason = Catalog.Lookup(id)
+
+            if not item then
+                notify("Could not look up that ID: " .. tostring(reason):sub(1, 80), "x")
+                return
+            end
+
+            if not item.Kind then
+                notify(item.Name .. " is not a supported item type.", "x")
+                return
+            end
+
+            if not findFavorite(item.Id) then
+                toggleFavorite(item, item.Kind)
+            end
+
+            idBox.Text = ""
+
+            if currentMode == "favorites" then
+                showFavorites()
+            end
+
+            notify("Added " .. item.Name .. " to favorites.", "check")
+        end)
+    end)
+
+    saveOutfitButton.MouseButton1Click:Connect(function()
+        if next(state.loadout) == nil then
+            notify("Equip something first.", "x")
+            return
+        end
+
+        local name = trim(outfitName.Text)
+
+        if name == "" then
+            name = "Outfit " .. (#state.outfits + 1)
+        end
+
+        local names = {}
+
+        local function remember(id)
+            names[tostring(id)] = state.names[tostring(id)]
+        end
+
+        for _, kind in ITEM_KINDS do
+            if state.loadout[kind] then
+                remember(state.loadout[kind])
+            end
+        end
+
+        for _, id in state.loadout.accessories or {} do
+            remember(id)
+        end
+
+        local outfit = {
+            name = name,
+            loadout = cloneLoadout(state.loadout),
+            names = names,
+        }
+
+        local replaced = false
+
+        for index, existing in state.outfits do
+            if existing.name == name then
+                state.outfits[index] = outfit
+                replaced = true
+                break
+            end
+        end
+
+        if not replaced then
+            table.insert(state.outfits, outfit)
+        end
+
+        saveState()
+        outfitName.Text = ""
+        renderOutfits()
+        notify("Saved outfit '" .. name .. "'.", "check")
     end)
 
     copyButton.MouseButton1Click:Connect(function()
@@ -816,6 +1272,7 @@ return function(Mirage, WindUI)
         state.loadout = {}
         commit()
         renderEquipped()
+        refreshFlags()
         refreshCards()
     end)
 
@@ -856,10 +1313,10 @@ return function(Mirage, WindUI)
 
     mount()
     loadState()
-    updateHideButton()
+    refreshFlags()
 
     if next(state.loadout) ~= nil then
-        Skins:SetLocalLoadout(copyLoadout())
+        Skins:SetLocalLoadout(cloneLoadout(state.loadout))
     end
 
     return UI
