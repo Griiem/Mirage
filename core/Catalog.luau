@@ -6,10 +6,12 @@ local PROXY_URL = "https://mirage.joshuanfontanaa.workers.dev"
 return function()
     local Catalog = {}
 
+    local proxy = PROXY_URL:gsub("/+$", "")
+
     Catalog.Hosts = {}
 
-    if PROXY_URL ~= "" then
-        table.insert(Catalog.Hosts, (PROXY_URL:gsub("/+$", "")))
+    if proxy ~= "" then
+        table.insert(Catalog.Hosts, proxy)
     end
 
     table.insert(Catalog.Hosts, "https://catalog.roblox.com")
@@ -19,14 +21,21 @@ return function()
     Catalog.Categories = {
         { Name = "All", Category = 1 },
         { Name = "Accessories", Category = 11, Kind = "accessory" },
-        { Name = "Hair", Category = 1, Keyword = "hair", Kind = "accessory", AssetTypes = { [41] = true } },
+        { Name = "Hair", Category = 11, Keyword = "hair", Kind = "accessory", AssetTypes = { [41] = true } },
         { Name = "Classic Shirts", Category = 3, Subcategory = 56, Kind = "shirt" },
         { Name = "Classic T-Shirts", Category = 3, Subcategory = 55, Kind = "tshirt" },
         { Name = "Classic Pants", Category = 3, Subcategory = 57, Kind = "pants" },
-        { Name = "Faces", Category = 1, Keyword = "face", Kind = "face", AssetTypes = { [18] = true } },
+        {
+            Name = "Faces",
+            Category = 4,
+            Kind = "face",
+            AssetTypes = { [18] = true },
+            Fallback = { Category = 1, Keyword = "face" },
+        },
     }
 
     Catalog.Exclusives = {
+        { Name = "Korblox", Category = 1, Keyword = "korblox", Kind = "bundle", RequireKind = "bundle" },
         { Name = "Fedoras", Category = 1, Keyword = "sparkle time fedora", Kind = "accessory", RequireKind = "accessory" },
         { Name = "Valkyries", Category = 1, Keyword = "valkyrie", Kind = "accessory", RequireKind = "accessory" },
         { Name = "Dominus", Category = 1, Keyword = "dominus", Kind = "accessory", RequireKind = "accessory" },
@@ -74,7 +83,11 @@ return function()
         local requestFn = request or http_request or (syn and syn.request)
 
         if type(requestFn) == "function" then
-            local ok, response = pcall(requestFn, { Url = url, Method = "GET" })
+            local ok, response = pcall(requestFn, {
+                Url = url,
+                Method = "GET",
+                Headers = { ["Accept-Language"] = "en-US,en;q=0.9" },
+            })
 
             if ok and type(response) == "table" then
                 return response.Body, response.StatusCode
@@ -102,15 +115,23 @@ return function()
         return flat:sub(1, 80)
     end
 
-    local function requestPage(params, cursor)
-        local list = table.clone(params)
-
-        if cursor and cursor ~= "" then
-            table.insert(list, "Cursor=" .. HttpService:UrlEncode(cursor))
+    local function decode(body)
+        if type(body) ~= "string" then
+            return nil
         end
 
-        local path = "/v1/search/items/details?" .. table.concat(list, "&")
+        local ok, result = pcall(function()
+            return HttpService:JSONDecode(body)
+        end)
 
+        if ok and type(result) == "table" then
+            return result
+        end
+
+        return nil
+    end
+
+    local function hostList()
         local hosts = {}
 
         if Catalog.ActiveHost then
@@ -123,23 +144,17 @@ return function()
             end
         end
 
+        return hosts
+    end
+
+    local function requestJson(path, check)
         local failures = {}
 
-        for _, host in hosts do
+        for _, host in hostList() do
             local body, status, err = fetch(host .. path)
-            local decoded
+            local decoded = decode(body)
 
-            if type(body) == "string" then
-                local ok, result = pcall(function()
-                    return HttpService:JSONDecode(body)
-                end)
-
-                if ok and type(result) == "table" then
-                    decoded = result
-                end
-            end
-
-            if decoded and type(decoded.data) == "table" then
+            if decoded and check(decoded) then
                 Catalog.ActiveHost = host
                 return decoded
             end
@@ -163,6 +178,68 @@ return function()
         return nil, table.concat(failures, " | ")
     end
 
+    local function looksLikeImage(body)
+        if type(body) ~= "string" or #body < 16 then
+            return false
+        end
+
+        if body:sub(2, 4) == "PNG" then
+            return true
+        end
+
+        return body:byte(1) == 255 and body:byte(2) == 216
+    end
+
+    function Catalog.FetchAsset(id)
+        local urls = {}
+
+        if proxy ~= "" then
+            table.insert(urls, proxy .. "/v1/asset?id=" .. tostring(id))
+        end
+
+        table.insert(urls, "https://assetdelivery.roblox.com/v1/asset/?id=" .. tostring(id))
+
+        local failures = {}
+
+        for _, url in urls do
+            local body, status, err = fetch(url)
+
+            if looksLikeImage(body) then
+                return body
+            end
+
+            local name = url:match("^https://([^/]+)")
+
+            table.insert(failures, tostring(name) .. " -> " .. (err or ("HTTP " .. tostring(status) .. ": " .. preview(body))))
+        end
+
+        return nil, table.concat(failures, " | ")
+    end
+
+    function Catalog.BundleAssets(id)
+        local decoded, reason = requestJson("/v1/bundles/" .. tostring(id) .. "/details", function(result)
+            return type(result.items) == "table"
+        end)
+
+        if not decoded then
+            return nil, reason
+        end
+
+        local ids = {}
+
+        for _, item in decoded.items do
+            if item.type == "Asset" and type(item.id) == "number" then
+                table.insert(ids, item.id)
+            end
+        end
+
+        if #ids == 0 then
+            return nil, "bundle has no asset items"
+        end
+
+        return ids
+    end
+
     local function buildItem(raw)
         if type(raw.id) ~= "number" then
             return nil
@@ -171,7 +248,9 @@ return function()
         local isBundle = raw.itemType == "Bundle"
         local kind
 
-        if not isBundle then
+        if isBundle then
+            kind = "bundle"
+        else
             kind = Catalog.KindOf(raw.assetType)
         end
 
@@ -192,6 +271,10 @@ return function()
             if raw.assetType ~= nil and not options.AssetTypes[raw.assetType] then
                 return false
             end
+        end
+
+        if options.RequireKind == "bundle" then
+            return item.IsBundle
         end
 
         if options.RequireKind then
@@ -230,7 +313,18 @@ return function()
         local lastError
 
         for _ = 1, maxPages do
-            local decoded, failure = requestPage(params, cursor)
+            local list = table.clone(params)
+
+            if cursor and cursor ~= "" then
+                table.insert(list, "Cursor=" .. HttpService:UrlEncode(cursor))
+            end
+
+            local decoded, failure = requestJson(
+                "/v1/search/items/details?" .. table.concat(list, "&"),
+                function(result)
+                    return type(result.data) == "table"
+                end
+            )
 
             if not decoded then
                 lastError = failure
