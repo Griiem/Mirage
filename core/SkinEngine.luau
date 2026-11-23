@@ -17,6 +17,8 @@ return function(RAW_URL)
         Catalog = nil,
         LocalLoadout = nil,
         Applied = setmetatable({}, { __mode = "k" }),
+        Checks = setmetatable({}, { __mode = "k" }),
+        LastVerify = {},
         Watched = {},
         Tokens = {},
         Connections = {},
@@ -459,16 +461,23 @@ return function(RAW_URL)
         end
 
         Skins.Applied[character] = nil
+        Skins.Checks[character] = nil
 
         for i = #undo, 1, -1 do
             pcall(undo[i])
         end
     end
 
-    local function setProperty(undo, inst, prop, value, created)
+    local function setProperty(undo, inst, prop, value, created, checks)
         local old = inst[prop]
 
         inst[prop] = value
+
+        if checks then
+            table.insert(checks, function()
+                return inst.Parent ~= nil and inst[prop] == value
+            end)
+        end
 
         local guard = inst:GetPropertyChangedSignal(prop):Connect(function()
             if Skins.Enabled and Skins.Alive and inst[prop] ~= value then
@@ -487,7 +496,7 @@ return function(RAW_URL)
         end)
     end
 
-    local function replaceChildren(undo, parent, predicate, clone)
+    local function replaceChildren(undo, parent, predicate, clone, checks)
         for _, child in parent:GetChildren() do
             if predicate(child) then
                 child.Parent = nil
@@ -503,6 +512,12 @@ return function(RAW_URL)
         table.insert(undo, function()
             clone:Destroy()
         end)
+
+        if checks then
+            table.insert(checks, function()
+                return clone.Parent == parent
+            end)
+        end
     end
 
     local function templateParts(root, isR15)
@@ -534,7 +549,7 @@ return function(RAW_URL)
         return parts
     end
 
-    local function overlay(character, undo, template, target)
+    local function overlay(character, undo, template, target, checks)
         local clone = template:Clone()
 
         for _, descendant in clone:GetDescendants() do
@@ -556,10 +571,14 @@ return function(RAW_URL)
         clone.CFrame = target.CFrame
         clone.Parent = character
 
-        setProperty(undo, target, "Transparency", 1, false)
+        setProperty(undo, target, "Transparency", 1, false, checks)
 
         table.insert(undo, function()
             clone:Destroy()
+        end)
+
+        table.insert(checks, function()
+            return clone.Parent ~= nil
         end)
 
         table.insert(Skins.Overlays, { Clone = clone, Target = target })
@@ -603,7 +622,9 @@ return function(RAW_URL)
         restore(character)
 
         local undo = {}
+        local checks = {}
         Skins.Applied[character] = undo
+        Skins.Checks[character] = checks
 
         local status = Skins.Status[tostring(player.UserId)]
 
@@ -624,7 +645,7 @@ return function(RAW_URL)
                 if typeof(asset) == "Instance" then
                     replaceChildren(undo, character, function(child)
                         return child:IsA(slot.Class)
-                    end, asset:Clone())
+                    end, asset:Clone(), checks)
                 else
                     local inst = character:FindFirstChildOfClass(slot.Class)
                     local created = false
@@ -635,7 +656,7 @@ return function(RAW_URL)
                         created = true
                     end
 
-                    setProperty(undo, inst, slot.Prop, asset, created)
+                    setProperty(undo, inst, slot.Prop, asset, created, checks)
                 end
 
                 mark(kind)
@@ -652,7 +673,7 @@ return function(RAW_URL)
 
                     replaceChildren(undo, head, function(child)
                         return child:IsA("Decal") and child.Name == "face"
-                    end, clone)
+                    end, clone, checks)
                 else
                     local decal = head:FindFirstChild("face")
                     local created = false
@@ -665,7 +686,7 @@ return function(RAW_URL)
                         created = true
                     end
 
-                    setProperty(undo, decal, "Texture", assets.face, created)
+                    setProperty(undo, decal, "Texture", assets.face, created, checks)
                 end
 
                 mark("face")
@@ -676,11 +697,11 @@ return function(RAW_URL)
             local head = character:FindFirstChild("Head")
 
             if head and head:IsA("BasePart") then
-                setProperty(undo, head, "Transparency", 1, false)
+                setProperty(undo, head, "Transparency", 1, false, checks)
 
                 for _, child in head:GetChildren() do
                     if child:IsA("Decal") then
-                        setProperty(undo, child, "Transparency", 1, false)
+                        setProperty(undo, child, "Transparency", 1, false, checks)
                     end
                 end
 
@@ -698,7 +719,7 @@ return function(RAW_URL)
 
                     if target and target:IsA("BasePart") and not used[template.Name] then
                         used[template.Name] = true
-                        overlay(character, undo, template, target)
+                        overlay(character, undo, template, target, checks)
                         mark("bundle part " .. template.Name)
                     end
                 end
@@ -730,6 +751,10 @@ return function(RAW_URL)
                 if added then
                     table.insert(undo, function()
                         clone:Destroy()
+                    end)
+
+                    table.insert(checks, function()
+                        return clone.Parent ~= nil
                     end)
 
                     mark("accessory")
@@ -834,6 +859,131 @@ return function(RAW_URL)
         end
     end
 
+    function Skins:Debug(player)
+        local lines = {}
+
+        local function add(text)
+            table.insert(lines, text)
+        end
+
+        local character = player.Character
+
+        if not character then
+            add("No character")
+            return lines
+        end
+
+        local humanoid = character:FindFirstChildOfClass("Humanoid")
+
+        add(("Character: %s | Parent: %s | Rig: %s"):format(
+            character.Name,
+            tostring(character.Parent),
+            humanoid and tostring(humanoid.RigType) or "no humanoid"
+        ))
+
+        local counts = {}
+
+        for _, child in character:GetChildren() do
+            counts[child.ClassName] = (counts[child.ClassName] or 0) + 1
+        end
+
+        local summary = {}
+
+        for className, count in counts do
+            table.insert(summary, className .. " x" .. count)
+        end
+
+        table.sort(summary)
+
+        add("Children: " .. table.concat(summary, ", "))
+
+        local shirt = character:FindFirstChildOfClass("Shirt")
+        local pants = character:FindFirstChildOfClass("Pants")
+        local graphic = character:FindFirstChildOfClass("ShirtGraphic")
+
+        add("Shirt: " .. (shirt and shirt.ShirtTemplate or "none"))
+        add("Pants: " .. (pants and pants.PantsTemplate or "none"))
+        add("ShirtGraphic: " .. (graphic and graphic.Graphic or "none"))
+
+        local head = character:FindFirstChild("Head")
+
+        if head then
+            add(("Head: %s | Transparency: %s | Decals: %d"):format(
+                head.ClassName,
+                tostring(head.Transparency),
+                #head:GetChildren()
+            ))
+        end
+
+        local surfaceCount = 0
+
+        for _, descendant in character:GetDescendants() do
+            if descendant:IsA("SurfaceAppearance") then
+                surfaceCount += 1
+            end
+        end
+
+        add("SurfaceAppearance count: " .. surfaceCount)
+
+        local undo = Skins.Applied[character]
+
+        add("Applied by Mirage on this character: " .. (undo and (#undo .. " undo entries") or "no"))
+
+        local root = character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart
+
+        if root then
+            local ok, nearby = pcall(function()
+                return workspace:GetPartBoundsInRadius(root.Position, 6)
+            end)
+
+            if ok and type(nearby) == "table" then
+                local seen = {}
+                local listed = 0
+
+                for _, part in nearby do
+                    local model = part:FindFirstAncestorOfClass("Model")
+
+                    if model and model ~= character and not model:IsDescendantOf(character) and not seen[model] then
+                        seen[model] = true
+                        listed += 1
+
+                        if listed <= 6 then
+                            add("Nearby model: " .. model:GetFullName())
+                        end
+                    end
+                end
+            end
+        end
+
+        local targets = {}
+
+        if shirt then
+            table.insert(targets, shirt)
+        end
+
+        if pants then
+            table.insert(targets, pants)
+        end
+
+        if #targets > 0 then
+            local ContentProvider = game:GetService("ContentProvider")
+
+            local ok, err = pcall(function()
+                ContentProvider:PreloadAsync(targets, function(contentId, status)
+                    add("Preload " .. tostring(contentId) .. " -> " .. tostring(status))
+                end)
+            end)
+
+            if not ok then
+                add("PreloadAsync failed: " .. tostring(err))
+            end
+        end
+
+        add(Skins:Report(player))
+
+        return lines
+    end
+
     function Skins:Report(player)
         local key = tostring(player.UserId)
 
@@ -932,6 +1082,35 @@ return function(RAW_URL)
 
     function Skins:Start()
         connect(RunService.RenderStepped, updateOverlays)
+
+        task.spawn(function()
+            while Skins.Alive do
+                task.wait(2)
+
+                local broken = {}
+
+                for character, checks in Skins.Checks do
+                    for _, check in checks do
+                        local ok, intact = pcall(check)
+
+                        if ok and not intact then
+                            table.insert(broken, character)
+                            break
+                        end
+                    end
+                end
+
+                for _, character in broken do
+                    local player = Players:GetPlayerFromCharacter(character)
+
+                    if player and (os.clock() - (Skins.LastVerify[player] or 0)) > 6 then
+                        Skins.LastVerify[player] = os.clock()
+                        log("Skin was removed or changed by the game, reapplying for", player.Name)
+                        schedule(player)
+                    end
+                end
+            end
+        end)
 
         connect(Players.PlayerAdded, function(player)
             watch(player)
