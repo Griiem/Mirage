@@ -35,7 +35,58 @@ return function(Mirage, WindUI)
 
     local UI = { Connections = {}, Destroyed = false }
 
-    local state = { loadout = {}, names = {}, favorites = {}, outfits = {} }
+    local state = { loadout = {}, names = {}, favorites = {}, outfits = {}, englishOnly = true }
+
+    local PORTUGUESE_WORDS = {
+        camiseta = true,
+        camisa = true,
+        calca = true,
+        blusa = true,
+        vestido = true,
+        moletom = true,
+        jaqueta = true,
+        bermuda = true,
+        cabelo = true,
+        preto = true,
+        preta = true,
+        branco = true,
+        branca = true,
+        vermelho = true,
+        vermelha = true,
+        azul = true,
+        verde = true,
+        amarelo = true,
+        roxo = true,
+        cinza = true,
+        marrom = true,
+        feminino = true,
+        masculino = true,
+        menino = true,
+        menina = true,
+        mulher = true,
+        homem = true,
+        da = true,
+        ["do"] = true,
+        dos = true,
+        das = true,
+        uma = true,
+        para = true,
+        com = true,
+    }
+
+    local function looksNonEnglish(name)
+        if name:find("\195[\128-\191]") then
+            return true
+        end
+
+        for word in name:lower():gmatch("%a+") do
+            if PORTUGUESE_WORDS[word] then
+                return true
+            end
+        end
+
+        return false
+    end
 
     local function notify(content, icon)
         WindUI:Notify({
@@ -173,6 +224,10 @@ return function(Mirage, WindUI)
             state.names = type(decoded.names) == "table" and decoded.names or {}
             state.favorites = type(decoded.favorites) == "table" and decoded.favorites or {}
             state.outfits = type(decoded.outfits) == "table" and decoded.outfits or {}
+
+            if type(decoded.englishOnly) == "boolean" then
+                state.englishOnly = decoded.englishOnly
+            end
         end
     end
 
@@ -622,6 +677,12 @@ return function(Mirage, WindUI)
         Parent = sidebar,
     })
 
+    local englishButton = styledButton({
+        Text = "",
+        Size = UDim2.new(1, 0, 0, 30),
+        Parent = sidebar,
+    })
+
     local cardRefreshers = {}
     local sidebarButtons = {}
     local currentCategory = Catalog.Categories[1]
@@ -654,9 +715,15 @@ return function(Mirage, WindUI)
         headlessButton.TextColor3 = on and COLORS.Good or COLORS.Text
     end
 
+    local function updateEnglish()
+        englishButton.Text = "English names: " .. (state.englishOnly and "ON" or "OFF")
+        englishButton.TextColor3 = state.englishOnly and COLORS.Good or COLORS.Text
+    end
+
     local function refreshFlags()
         updateHideButton()
         updateHeadless()
+        updateEnglish()
     end
 
     local function renderEquipped()
@@ -1056,14 +1123,19 @@ return function(Mirage, WindUI)
 
             currentSource = source
 
+            local shown = 0
+
             for _, item in result.Items do
-                addCard(item, category.Kind)
+                if not (state.englishOnly and looksNonEnglish(item.Name)) then
+                    shown += 1
+                    addCard(item, category.Kind)
+                end
             end
 
             nextCursor = result.NextCursor
             loadMore.Visible = nextCursor ~= nil and nextCursor ~= ""
 
-            if #result.Items == 0 and reset then
+            if shown == 0 and reset then
                 statusLabel.Text = "No results."
             else
                 statusLabel.Text = ""
@@ -1152,6 +1224,7 @@ return function(Mirage, WindUI)
     addCategoryButtons(Catalog.Exclusives)
 
     headlessButton.LayoutOrder = nextOrder()
+    englishButton.LayoutOrder = nextOrder()
 
     section("YOURS")
 
@@ -1187,6 +1260,16 @@ return function(Mirage, WindUI)
 
         commit()
         updateHeadless()
+    end)
+
+    englishButton.MouseButton1Click:Connect(function()
+        state.englishOnly = not state.englishOnly
+        saveState()
+        updateEnglish()
+
+        if currentMode == "catalog" and browse.Visible then
+            runSearch(true)
+        end
     end)
 
     closeButton.MouseButton1Click:Connect(function()
