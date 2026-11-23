@@ -65,4 +65,27 @@ Tab:Button({
     end,
 })
 
+
+Tab:Button({
+    Title = "Debug character",
+    Desc = "Prints details about your character in the console (F9)",
+
+    Callback = function()
+        task.spawn(function()
+            local lines = Skins:Debug(Players.LocalPlayer)
+
+            for _, line in lines do
+                warn("[Mirage] Debug: " .. line)
+            end
+
+            WindUI:Notify({
+                Title = "Mirage debug",
+                Content = "Printed " .. #lines .. " lines in the console (F9).",
+                Icon = "info",
+                Duration = 5,
+            })
+        end)
+    end,
+})
+
 end
