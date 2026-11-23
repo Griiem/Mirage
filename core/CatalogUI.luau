@@ -4,7 +4,7 @@ return function(Mirage, WindUI)
     local HttpService = game:GetService("HttpService")
 
     local Skins = Mirage.Skins
-    local Catalog = Mirage.Require("core/Catalog.luau")()
+    local Catalog = Mirage.Catalog or Mirage.Require("core/Catalog.luau")()
 
     local STATE_FILE = "Mirage/loadout.json"
 
@@ -26,7 +26,10 @@ return function(Mirage, WindUI)
         tshirt = "T-Shirt",
         face = "Face",
         accessory = "Accessory",
+        bundle = "Bundle",
     }
+
+    local LIST_KEYS = { accessory = "accessories", bundle = "bundles" }
 
     local ITEM_KINDS = { "shirt", "pants", "tshirt", "face" }
 
@@ -122,7 +125,11 @@ return function(Mirage, WindUI)
         })
     end
 
-    local function thumb(id)
+    local function thumb(id, kind)
+        if kind == "bundle" then
+            return ("rbxthumb://type=BundleThumbnail&id=%d&w=150&h=150"):format(id)
+        end
+
         return ("rbxthumb://type=Asset&id=%d&w=150&h=150"):format(id)
     end
 
@@ -189,8 +196,10 @@ return function(Mirage, WindUI)
     end
 
     local function isEquipped(kind, id)
-        if kind == "accessory" then
-            for _, value in state.loadout.accessories or {} do
+        local listKey = LIST_KEYS[kind]
+
+        if listKey then
+            for _, value in state.loadout[listKey] or {} do
                 if value == id then
                     return true
                 end
@@ -205,8 +214,10 @@ return function(Mirage, WindUI)
     local function toggleEquip(kind, id, name)
         state.names[tostring(id)] = name
 
-        if kind == "accessory" then
-            local list = state.loadout.accessories or {}
+        local listKey = LIST_KEYS[kind]
+
+        if listKey then
+            local list = state.loadout[listKey] or {}
             local index = table.find(list, id)
 
             if index then
@@ -215,7 +226,7 @@ return function(Mirage, WindUI)
                 table.insert(list, id)
             end
 
-            state.loadout.accessories = #list > 0 and list or nil
+            state.loadout[listKey] = #list > 0 and list or nil
         elseif state.loadout[kind] == id then
             state.loadout[kind] = nil
         else
@@ -616,6 +627,7 @@ return function(Mirage, WindUI)
     local currentCategory = Catalog.Categories[1]
     local currentMode = "catalog"
     local nextCursor
+    local currentSource
     local loading = false
     local searchToken = 0
     local initialized = false
@@ -671,7 +683,7 @@ return function(Mirage, WindUI)
                 BackgroundTransparency = 1,
                 Position = UDim2.fromOffset(6, 6),
                 Size = UDim2.fromOffset(36, 36),
-                Image = thumb(id),
+                Image = thumb(id, kind),
                 ScaleType = Enum.ScaleType.Fit,
                 Parent = row,
             })
@@ -721,6 +733,10 @@ return function(Mirage, WindUI)
             addRow("accessory", id)
         end
 
+        for _, id in state.loadout.bundles or {} do
+            addRow("bundle", id)
+        end
+
         emptyLabel.Visible = count == 0
         updateHideButton()
     end
@@ -736,6 +752,10 @@ return function(Mirage, WindUI)
 
         if type(loadout.accessories) == "table" then
             count += #loadout.accessories
+        end
+
+        if type(loadout.bundles) == "table" then
+            count += #loadout.bundles
         end
 
         return count
@@ -820,7 +840,7 @@ return function(Mirage, WindUI)
         local kind = item.Kind or categoryKind
 
         if item.IsBundle then
-            kind = nil
+            kind = "bundle"
         end
 
         local card = create("TextButton", {
@@ -839,7 +859,7 @@ return function(Mirage, WindUI)
             BackgroundTransparency = 1,
             Position = UDim2.fromOffset(6, 6),
             Size = UDim2.new(1, -12, 0, 108),
-            Image = thumb(item.Id),
+            Image = thumb(item.Id, kind),
             ScaleType = Enum.ScaleType.Fit,
             Parent = card,
         })
@@ -880,7 +900,7 @@ return function(Mirage, WindUI)
 
         local function refresh()
             if not kind then
-                tag.Text = item.IsBundle and "Bundle (unsupported)" or "Unsupported"
+                tag.Text = "Unsupported"
                 tag.TextColor3 = COLORS.Bad
                 cardStroke.Transparency = 1
             elseif isEquipped(kind, item.Id) then
@@ -946,7 +966,12 @@ return function(Mirage, WindUI)
             if filter == "" or string.find(string.lower(name), filter, 1, true) then
                 shown += 1
 
-                addCard({ Id = favorite.id, Name = name, Kind = favorite.kind }, nil)
+                addCard({
+                    Id = favorite.id,
+                    Name = name,
+                    Kind = favorite.kind,
+                    IsBundle = favorite.kind == "bundle",
+                }, nil)
             end
         end
 
@@ -981,23 +1006,41 @@ return function(Mirage, WindUI)
 
         local category = currentCategory
         local typed = trim(searchBox.Text)
-        local keyword = typed
-
-        if category.Keyword and category.Keyword ~= "" then
-            keyword = typed ~= "" and (typed .. " " .. category.Keyword) or category.Keyword
-        end
-
         local cursor = (not reset) and nextCursor or nil
+        local previousSource = currentSource
 
-        task.spawn(function()
-            local result, reason = Catalog.Search({
-                Category = category.Category,
-                Subcategory = category.Subcategory,
+        local function buildOptions(source)
+            local keyword = typed
+
+            if source.Keyword and source.Keyword ~= "" then
+                keyword = typed ~= "" and (typed .. " " .. source.Keyword) or source.Keyword
+            end
+
+            return {
+                Category = source.Category,
+                Subcategory = source.Subcategory,
                 Keyword = keyword,
                 Cursor = cursor,
                 AssetTypes = category.AssetTypes,
                 RequireKind = category.RequireKind,
-            })
+            }
+        end
+
+        task.spawn(function()
+            local source = reset and category or (previousSource or category)
+            local result, reason = Catalog.Search(buildOptions(source))
+
+            if reset and category.Fallback and (not result or #result.Items == 0) then
+                local fallbackResult, fallbackReason = Catalog.Search(buildOptions(category.Fallback))
+
+                if fallbackResult then
+                    result = fallbackResult
+                    reason = nil
+                    source = category.Fallback
+                elseif not result then
+                    reason = tostring(reason) .. " | fallback: " .. tostring(fallbackReason)
+                end
+            end
 
             if UI.Destroyed or token ~= searchToken then
                 return
@@ -1010,6 +1053,8 @@ return function(Mirage, WindUI)
                 warn("[Mirage] Catalog search failed: " .. tostring(reason))
                 return
             end
+
+            currentSource = source
 
             for _, item in result.Items do
                 addCard(item, category.Kind)
@@ -1225,6 +1270,10 @@ return function(Mirage, WindUI)
         end
 
         for _, id in state.loadout.accessories or {} do
+            remember(id)
+        end
+
+        for _, id in state.loadout.bundles or {} do
             remember(id)
         end
 
