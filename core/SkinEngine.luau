@@ -474,9 +474,12 @@ return function(RAW_URL)
         inst[prop] = value
 
         if checks then
-            table.insert(checks, function()
-                return inst.Parent ~= nil and inst[prop] == value
-            end)
+            table.insert(checks, {
+                Name = inst.ClassName .. "." .. prop,
+                Run = function()
+                    return inst.Parent ~= nil and inst[prop] == value
+                end,
+            })
         end
 
         local guard = inst:GetPropertyChangedSignal(prop):Connect(function()
@@ -514,9 +517,12 @@ return function(RAW_URL)
         end)
 
         if checks then
-            table.insert(checks, function()
-                return clone.Parent == parent
-            end)
+            table.insert(checks, {
+                Name = clone.ClassName .. " " .. clone.Name .. " parent",
+                Run = function()
+                    return clone.Parent == parent
+                end,
+            })
         end
     end
 
@@ -577,9 +583,12 @@ return function(RAW_URL)
             clone:Destroy()
         end)
 
-        table.insert(checks, function()
-            return clone.Parent ~= nil
-        end)
+        table.insert(checks, {
+            Name = "overlay " .. clone.Name,
+            Run = function()
+                return clone.Parent ~= nil
+            end,
+        })
 
         table.insert(Skins.Overlays, { Clone = clone, Target = target })
     end
@@ -753,9 +762,12 @@ return function(RAW_URL)
                         clone:Destroy()
                     end)
 
-                    table.insert(checks, function()
-                        return clone.Parent ~= nil
-                    end)
+                    table.insert(checks, {
+                        Name = "accessory " .. clone.Name,
+                        Run = function()
+                            return clone.Parent ~= nil
+                        end,
+                    })
 
                     mark("accessory")
                 else
@@ -897,6 +909,29 @@ return function(RAW_URL)
 
         add("Children: " .. table.concat(summary, ", "))
 
+        for _, child in character:GetChildren() do
+            if child:IsA("Accessory") then
+                local handle = child:FindFirstChild("Handle")
+                local wrap = child:FindFirstChildWhichIsA("WrapLayer", true)
+
+                add(("Accessory: %s | Handle: %s | Layered: %s"):format(
+                    child.Name,
+                    handle and (handle.ClassName .. " T=" .. tostring(handle.Transparency)) or "none",
+                    wrap and "yes" or "no"
+                ))
+            end
+        end
+
+        local camera = workspace.CurrentCamera
+        local cameraHead = character:FindFirstChild("Head")
+
+        if camera and cameraHead then
+            add(("Camera: type %s | distance to head: %.1f"):format(
+                tostring(camera.CameraType),
+                (camera.CFrame.Position - cameraHead.Position).Magnitude
+            ))
+        end
+
         local shirt = character:FindFirstChildOfClass("Shirt")
         local pants = character:FindFirstChildOfClass("Pants")
         local graphic = character:FindFirstChildOfClass("ShirtGraphic")
@@ -924,6 +959,22 @@ return function(RAW_URL)
         end
 
         add("SurfaceAppearance count: " .. surfaceCount)
+
+        for _, descendant in character:GetDescendants() do
+            if descendant:IsA("SurfaceAppearance") then
+                add("SurfaceAppearance on: " .. descendant.Parent:GetFullName())
+            end
+        end
+
+        local texturedParts = 0
+
+        for _, descendant in character:GetDescendants() do
+            if descendant:IsA("MeshPart") and descendant.TextureID ~= "" then
+                texturedParts += 1
+            end
+        end
+
+        add("MeshParts with a TextureID: " .. texturedParts)
 
         local undo = Skins.Applied[character]
 
@@ -1091,21 +1142,21 @@ return function(RAW_URL)
 
                 for character, checks in Skins.Checks do
                     for _, check in checks do
-                        local ok, intact = pcall(check)
+                        local ok, intact = pcall(check.Run)
 
                         if ok and not intact then
-                            table.insert(broken, character)
+                            table.insert(broken, { Character = character, Reason = check.Name })
                             break
                         end
                     end
                 end
 
-                for _, character in broken do
-                    local player = Players:GetPlayerFromCharacter(character)
+                for _, item in broken do
+                    local player = Players:GetPlayerFromCharacter(item.Character)
 
                     if player and (os.clock() - (Skins.LastVerify[player] or 0)) > 6 then
                         Skins.LastVerify[player] = os.clock()
-                        log("Skin was removed or changed by the game, reapplying for", player.Name)
+                        log("Skin was removed or changed by the game, reapplying for", player.Name, "(failed check: " .. item.Reason .. ")")
                         schedule(player)
                     end
                 end
