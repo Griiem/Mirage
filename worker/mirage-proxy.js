@@ -1,4 +1,8 @@
-const ALLOWED_PATHS = ["/v1/search/items/details"];
+const ROUTES = [
+  { pattern: /^\/v1\/search\/items\/details$/, upstream: "https://catalog.roblox.com", rewrite: (path) => path, binary: false },
+  { pattern: /^\/v1\/bundles\/\d+\/details$/, upstream: "https://catalog.roblox.com", rewrite: (path) => path, binary: false },
+  { pattern: /^\/v1\/asset$/, upstream: "https://assetdelivery.roblox.com", rewrite: () => "/v1/asset/", binary: true },
+];
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -20,23 +24,38 @@ export default {
     }
 
     const url = new URL(request.url);
+    const route = ROUTES.find((entry) => entry.pattern.test(url.pathname));
 
-    if (!ALLOWED_PATHS.includes(url.pathname)) {
+    if (!route) {
       return jsonResponse(JSON.stringify({ errors: [{ message: "Path not allowed" }] }), 404);
     }
 
-    const target = "https://catalog.roblox.com" + url.pathname + url.search;
+    if (route.binary && !/^\d+$/.test(url.searchParams.get("id") || "")) {
+      return jsonResponse(JSON.stringify({ errors: [{ message: "Invalid id" }] }), 400);
+    }
+
+    const target = route.upstream + route.rewrite(url.pathname) + url.search;
 
     const upstream = await fetch(target, {
       headers: {
-        Accept: "application/json",
+        Accept: route.binary ? "*/*" : "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
         "User-Agent": "Mozilla/5.0",
       },
-      cf: { cacheTtl: 60, cacheEverything: true },
+      redirect: "follow",
+      cf: { cacheTtl: route.binary ? 3600 : 60, cacheEverything: true },
     });
 
-    const body = await upstream.text();
+    if (route.binary) {
+      return new Response(upstream.body, {
+        status: upstream.status,
+        headers: {
+          ...CORS_HEADERS,
+          "Content-Type": upstream.headers.get("Content-Type") || "application/octet-stream",
+        },
+      });
+    }
 
-    return jsonResponse(body, upstream.status);
+    return jsonResponse(await upstream.text(), upstream.status);
   },
 };
