@@ -21,7 +21,14 @@ return function()
     Catalog.Categories = {
         { Name = "All", Category = 1 },
         { Name = "Accessories", Category = 11, Kind = "accessory" },
-        { Name = "Hair", Category = 11, Keyword = "hair", Kind = "accessory", AssetTypes = { [41] = true } },
+        {
+            Name = "Hair",
+            Category = 11,
+            Keyword = "hair",
+            Kind = "accessory",
+            RequireKind = "accessory",
+            Fallback = { Category = 1, Keyword = "hair" },
+        },
         { Name = "Classic Shirts", Category = 3, Subcategory = 56, Kind = "shirt" },
         { Name = "Classic T-Shirts", Category = 3, Subcategory = 55, Kind = "tshirt" },
         { Name = "Classic Pants", Category = 3, Subcategory = 57, Kind = "pants" },
@@ -29,7 +36,7 @@ return function()
             Name = "Faces",
             Category = 4,
             Kind = "face",
-            AssetTypes = { [18] = true },
+            AssetTypes = { [18] = true, [42] = true },
             Fallback = { Category = 1, Keyword = "face" },
         },
     }
@@ -59,8 +66,54 @@ return function()
         KIND_BY_ASSET_TYPE[assetType] = "accessory"
     end
 
+    local TYPE_NAMES = {
+        tshirt = 2,
+        hat = 8,
+        shirt = 11,
+        pants = 12,
+        face = 18,
+        hairaccessory = 41,
+        faceaccessory = 42,
+        neckaccessory = 43,
+        shoulderaccessory = 44,
+        frontaccessory = 45,
+        backaccessory = 46,
+        waistaccessory = 47,
+        tshirtaccessory = 64,
+        shirtaccessory = 65,
+        pantsaccessory = 66,
+        jacketaccessory = 67,
+        sweateraccessory = 68,
+        shortsaccessory = 69,
+        leftshoeaccessory = 70,
+        rightshoeaccessory = 71,
+        dressskirtaccessory = 72,
+    }
+
+    local function normalizeType(value)
+        if type(value) == "number" then
+            return value
+        end
+
+        if type(value) == "string" then
+            return TYPE_NAMES[value:lower()] or tonumber(value)
+        end
+
+        return nil
+    end
+
+    local function isBundleType(value)
+        return value == "Bundle" or value == 2
+    end
+
     function Catalog.KindOf(assetType)
-        return KIND_BY_ASSET_TYPE[assetType]
+        local normalized = normalizeType(assetType)
+
+        if normalized == nil then
+            return nil
+        end
+
+        return KIND_BY_ASSET_TYPE[normalized]
     end
 
     function Catalog.Lookup(id)
@@ -245,7 +298,7 @@ return function()
             return nil
         end
 
-        local isBundle = raw.itemType == "Bundle"
+        local isBundle = isBundleType(raw.itemType)
         local kind
 
         if isBundle then
@@ -268,7 +321,9 @@ return function()
                 return false
             end
 
-            if raw.assetType ~= nil and not options.AssetTypes[raw.assetType] then
+            local normalized = normalizeType(raw.assetType)
+
+            if normalized ~= nil and not options.AssetTypes[normalized] then
                 return false
             end
         end
