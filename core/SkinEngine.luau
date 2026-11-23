@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local HttpService = game:GetService("HttpService")
 local InsertService = game:GetService("InsertService")
+local RunService = game:GetService("RunService")
 
 return function(RAW_URL)
     local Skins = {
@@ -10,6 +11,10 @@ return function(RAW_URL)
         Assets = {},
         Status = {},
         Objects = {},
+        Textures = {},
+        BundleCache = {},
+        Overlays = {},
+        Catalog = nil,
         LocalLoadout = nil,
         Applied = setmetatable({}, { __mode = "k" }),
         Watched = {},
@@ -34,6 +39,32 @@ return function(RAW_URL)
         pants = { "Pants", "PantsTemplate" },
         tshirt = { "ShirtGraphic", "Graphic" },
         face = { "Decal", "Texture" },
+    }
+
+    local PART_NAMES = {
+        R15 = {
+            UpperTorso = true,
+            LowerTorso = true,
+            LeftUpperArm = true,
+            LeftLowerArm = true,
+            LeftHand = true,
+            RightUpperArm = true,
+            RightLowerArm = true,
+            RightHand = true,
+            LeftUpperLeg = true,
+            LeftLowerLeg = true,
+            LeftFoot = true,
+            RightUpperLeg = true,
+            RightLowerLeg = true,
+            RightFoot = true,
+        },
+        R6 = {
+            Torso = true,
+            ["Left Arm"] = true,
+            ["Right Arm"] = true,
+            ["Left Leg"] = true,
+            ["Right Leg"] = true,
+        },
     }
 
     local HasFs = type(writefile) == "function"
@@ -123,13 +154,47 @@ return function(RAW_URL)
         return nil
     end
 
+    local function ensureCache()
+        pcall(function()
+            if not isfolder(CACHE_ROOT) then
+                makefolder(CACHE_ROOT)
+            end
+
+            if not isfolder(CACHE) then
+                makefolder(CACHE)
+            end
+        end)
+    end
+
+    local function toCustomAsset(tag, body)
+        if not HasFs then
+            return nil, "executor has no file functions"
+        end
+
+        ensureCache()
+
+        Skins.Counter += 1
+
+        local path = ("%s/%s_%d.png"):format(CACHE, tag, Skins.Counter)
+
+        local wrote, writeErr = pcall(writefile, path, body)
+
+        if not wrote then
+            return nil, "writefile failed (" .. tostring(writeErr) .. ")"
+        end
+
+        local gotAsset, asset = pcall(getcustomasset, path)
+
+        if not gotAsset or not asset then
+            return nil, "getcustomasset failed (" .. tostring(asset) .. ")"
+        end
+
+        return asset
+    end
+
     local function download(userId, kind, fileName)
         if type(fileName) ~= "string" then
             return nil, "no file name in index.json"
-        end
-
-        if not HasFs then
-            return nil, "executor has no file functions"
         end
 
         local url = ("%sskins/%s/%s?t=%d"):format(RAW_URL, userId, fileName, os.time())
@@ -146,23 +211,7 @@ return function(RAW_URL)
             return nil, "not a valid PNG at " .. url
         end
 
-        Skins.Counter += 1
-
-        local path = ("%s/%s_%s_%d.png"):format(CACHE, userId, kind, Skins.Counter)
-
-        local wrote, writeErr = pcall(writefile, path, body)
-
-        if not wrote then
-            return nil, "writefile failed (" .. tostring(writeErr) .. ")"
-        end
-
-        local gotAsset, asset = pcall(getcustomasset, path)
-
-        if not gotAsset or not asset then
-            return nil, "getcustomasset failed (" .. tostring(asset) .. ")"
-        end
-
-        return asset
+        return toCustomAsset(userId .. "_" .. kind, body)
     end
 
     local function findClass(objects, className)
@@ -231,7 +280,7 @@ return function(RAW_URL)
         return nil, reason
     end
 
-    local function catalogTemplate(kind, id)
+    local function loadCatalogItem(userId, kind, id)
         local info = CATALOG_CLASS[kind]
         local obj, reason = loadObject(id, info[1])
 
@@ -239,13 +288,59 @@ return function(RAW_URL)
             return nil, reason
         end
 
-        local value = obj[info[2]]
+        local template = obj[info[2]]
 
-        if type(value) ~= "string" or value == "" then
+        if type(template) ~= "string" or template == "" then
             return nil, "asset " .. tostring(id) .. " has no " .. info[2]
         end
 
-        return value
+        local templateId = template:match("id=(%d+)") or template:match("rbxassetid://(%d+)")
+        local catalog = Skins.Catalog
+
+        if templateId and catalog and catalog.FetchAsset then
+            local cacheKey = kind .. ":" .. templateId
+
+            if Skins.Textures[cacheKey] then
+                return Skins.Textures[cacheKey], "download"
+            end
+
+            local body, fetchReason = catalog.FetchAsset(templateId)
+
+            if body then
+                local asset, assetReason = toCustomAsset(userId .. "_" .. kind, body)
+
+                if asset then
+                    Skins.Textures[cacheKey] = asset
+                    return asset, "download"
+                end
+
+                log(kind, id, assetReason)
+            else
+                log(kind, id, "texture download failed, using the asset instance:", tostring(fetchReason))
+            end
+        end
+
+        return obj, "instance"
+    end
+
+    local function resolveBundle(id)
+        if Skins.BundleCache[id] then
+            return Skins.BundleCache[id]
+        end
+
+        local catalog = Skins.Catalog
+
+        if not catalog or not catalog.BundleAssets then
+            return nil, "catalog module is not loaded"
+        end
+
+        local ids, reason = catalog.BundleAssets(id)
+
+        if ids then
+            Skins.BundleCache[id] = ids
+        end
+
+        return ids, reason
     end
 
     local function loadAssets(player)
@@ -272,22 +367,22 @@ return function(RAW_URL)
             if value ~= nil then
                 table.insert(status.Listed, kind)
 
-                local result, reason
+                local result, detail
 
                 if type(value) == "string" then
-                    result, reason = download(key, kind, value)
+                    result, detail = download(key, kind, value)
                 elseif type(value) == "number" then
-                    result, reason = catalogTemplate(kind, value)
+                    result, detail = loadCatalogItem(key, kind, value)
                 else
-                    reason = "unsupported value in the entry"
+                    detail = "unsupported value in the entry"
                 end
 
                 if result then
                     assets[kind] = result
-                    table.insert(status.Loaded, kind)
+                    table.insert(status.Loaded, kind .. (type(value) == "number" and (" (" .. tostring(detail) .. ")") or ""))
                 else
-                    status.Failed[kind] = reason
-                    log(key, kind, reason)
+                    status.Failed[kind] = tostring(detail)
+                    log(key, kind, tostring(detail))
                 end
             end
         end
@@ -311,6 +406,43 @@ return function(RAW_URL)
 
             if #list > 0 then
                 assets.accessories = list
+            end
+        end
+
+        if type(entry.bundles) == "table" then
+            local roots = {}
+
+            for _, bundleId in entry.bundles do
+                table.insert(status.Listed, "bundle")
+
+                local assetIds, reason = resolveBundle(bundleId)
+
+                if assetIds then
+                    local count = 0
+
+                    for _, assetId in assetIds do
+                        local root = loadObject(assetId, "Instance")
+
+                        if root then
+                            table.insert(roots, root)
+                            count += 1
+                        end
+                    end
+
+                    if count > 0 then
+                        table.insert(status.Loaded, "bundle " .. tostring(bundleId))
+                    else
+                        status.Failed["bundle " .. tostring(bundleId)] = "none of its assets could be loaded"
+                        log(key, "bundle", bundleId, "none of its assets could be loaded")
+                    end
+                else
+                    status.Failed["bundle " .. tostring(bundleId)] = tostring(reason)
+                    log(key, "bundle", bundleId, tostring(reason))
+                end
+            end
+
+            if #roots > 0 then
+                assets.bundleRoots = roots
             end
         end
 
@@ -355,6 +487,97 @@ return function(RAW_URL)
         end)
     end
 
+    local function replaceChildren(undo, parent, predicate, clone)
+        for _, child in parent:GetChildren() do
+            if predicate(child) then
+                child.Parent = nil
+
+                table.insert(undo, function()
+                    child.Parent = parent
+                end)
+            end
+        end
+
+        clone.Parent = parent
+
+        table.insert(undo, function()
+            clone:Destroy()
+        end)
+    end
+
+    local function templateParts(root, isR15)
+        local names = isR15 and PART_NAMES.R15 or PART_NAMES.R6
+        local folderNames = isR15 and { "R15ArtistIntent", "R15Fixed", "R15" } or { "R6" }
+        local source = root
+
+        for _, folderName in folderNames do
+            local folder = root:FindFirstChild(folderName, true)
+
+            if folder then
+                source = folder
+                break
+            end
+        end
+
+        local parts = {}
+
+        if source:IsA("BasePart") and names[source.Name] then
+            table.insert(parts, source)
+        end
+
+        for _, descendant in source:GetDescendants() do
+            if descendant:IsA("BasePart") and names[descendant.Name] then
+                table.insert(parts, descendant)
+            end
+        end
+
+        return parts
+    end
+
+    local function overlay(character, undo, template, target)
+        local clone = template:Clone()
+
+        for _, descendant in clone:GetDescendants() do
+            if descendant:IsA("Attachment")
+                or descendant:IsA("JointInstance")
+                or descendant:IsA("Constraint")
+                or descendant:IsA("BaseScript") then
+
+                descendant:Destroy()
+            end
+        end
+
+        clone.Name = "Mirage_" .. template.Name:gsub("%s", "")
+        clone.Anchored = true
+        clone.CanCollide = false
+        clone.CanTouch = false
+        clone.CanQuery = false
+        clone.Massless = true
+        clone.CFrame = target.CFrame
+        clone.Parent = character
+
+        setProperty(undo, target, "Transparency", 1, false)
+
+        table.insert(undo, function()
+            clone:Destroy()
+        end)
+
+        table.insert(Skins.Overlays, { Clone = clone, Target = target })
+    end
+
+    local function updateOverlays()
+        for index = #Skins.Overlays, 1, -1 do
+            local pair = Skins.Overlays[index]
+
+            if pair.Clone.Parent and pair.Target.Parent then
+                pair.Clone.CFrame = pair.Target.CFrame
+            else
+                pair.Clone:Destroy()
+                table.remove(Skins.Overlays, index)
+            end
+        end
+    end
+
     local function apply(player)
         local character = player.Character
 
@@ -384,6 +607,12 @@ return function(RAW_URL)
 
         local status = Skins.Status[tostring(player.UserId)]
 
+        local function mark(name)
+            if status then
+                table.insert(status.Applied, name)
+            end
+        end
+
         if status then
             table.clear(status.Applied)
         end
@@ -392,20 +621,24 @@ return function(RAW_URL)
             local asset = assets[kind]
 
             if asset then
-                local inst = character:FindFirstChildOfClass(slot.Class)
-                local created = false
+                if typeof(asset) == "Instance" then
+                    replaceChildren(undo, character, function(child)
+                        return child:IsA(slot.Class)
+                    end, asset:Clone())
+                else
+                    local inst = character:FindFirstChildOfClass(slot.Class)
+                    local created = false
 
-                if not inst then
-                    inst = Instance.new(slot.Class)
-                    inst.Parent = character
-                    created = true
+                    if not inst then
+                        inst = Instance.new(slot.Class)
+                        inst.Parent = character
+                        created = true
+                    end
+
+                    setProperty(undo, inst, slot.Prop, asset, created)
                 end
 
-                setProperty(undo, inst, slot.Prop, asset, created)
-
-                if status then
-                    table.insert(status.Applied, kind)
-                end
+                mark(kind)
             end
         end
 
@@ -413,22 +646,29 @@ return function(RAW_URL)
             local head = character:FindFirstChild("Head")
 
             if head then
-                local decal = head:FindFirstChild("face")
-                local created = false
+                if typeof(assets.face) == "Instance" then
+                    local clone = assets.face:Clone()
+                    clone.Name = "face"
 
-                if not (decal and decal:IsA("Decal")) then
-                    decal = Instance.new("Decal")
-                    decal.Name = "face"
-                    decal.Face = Enum.NormalId.Front
-                    decal.Parent = head
-                    created = true
+                    replaceChildren(undo, head, function(child)
+                        return child:IsA("Decal") and child.Name == "face"
+                    end, clone)
+                else
+                    local decal = head:FindFirstChild("face")
+                    local created = false
+
+                    if not (decal and decal:IsA("Decal")) then
+                        decal = Instance.new("Decal")
+                        decal.Name = "face"
+                        decal.Face = Enum.NormalId.Front
+                        decal.Parent = head
+                        created = true
+                    end
+
+                    setProperty(undo, decal, "Texture", assets.face, created)
                 end
 
-                setProperty(undo, decal, "Texture", assets.face, created)
-
-                if status then
-                    table.insert(status.Applied, "face")
-                end
+                mark("face")
             end
         end
 
@@ -438,14 +678,29 @@ return function(RAW_URL)
             if head and head:IsA("BasePart") then
                 setProperty(undo, head, "Transparency", 1, false)
 
-                local faceDecal = head:FindFirstChild("face")
-
-                if faceDecal and faceDecal:IsA("Decal") then
-                    setProperty(undo, faceDecal, "Transparency", 1, false)
+                for _, child in head:GetChildren() do
+                    if child:IsA("Decal") then
+                        setProperty(undo, child, "Transparency", 1, false)
+                    end
                 end
 
-                if status then
-                    table.insert(status.Applied, "headless")
+                mark("headless")
+            end
+        end
+
+        if assets.bundleRoots then
+            local isR15 = character:FindFirstChild("UpperTorso") ~= nil
+            local used = {}
+
+            for _, root in assets.bundleRoots do
+                for _, template in templateParts(root, isR15) do
+                    local target = character:FindFirstChild(template.Name)
+
+                    if target and target:IsA("BasePart") and not used[template.Name] then
+                        used[template.Name] = true
+                        overlay(character, undo, template, target)
+                        mark("bundle part " .. template.Name)
+                    end
                 end
             end
         end
@@ -477,9 +732,7 @@ return function(RAW_URL)
                         clone:Destroy()
                     end)
 
-                    if status then
-                        table.insert(status.Applied, "accessory")
-                    end
+                    mark("accessory")
                 else
                     clone:Destroy()
                 end
@@ -673,8 +926,12 @@ return function(RAW_URL)
         end
     end
 
-    function Skins:Start()
+    function Skins:Prepare()
         prepareCache()
+    end
+
+    function Skins:Start()
+        connect(RunService.RenderStepped, updateOverlays)
 
         connect(Players.PlayerAdded, function(player)
             watch(player)
@@ -709,6 +966,7 @@ return function(RAW_URL)
             restore(character)
         end
 
+        table.clear(Skins.Overlays)
         table.clear(Skins.Watched)
         table.clear(Skins.Tokens)
         table.clear(Skins.Assets)
