@@ -73,6 +73,8 @@ if not coreOk or type(Skins) ~= "table" then
     return
 end
 
+Skins:Prepare()
+
 local Mirage = {
     RAW_URL = RAW_URL,
     Skins = Skins,
@@ -86,6 +88,17 @@ function Mirage.Require(path)
     assert(chunk, compileError or "Compilation failed for " .. path)
 
     return chunk()
+end
+
+local catalogOk, Catalog = pcall(function()
+    return Mirage.Require("core/Catalog.luau")()
+end)
+
+if catalogOk and type(Catalog) == "table" then
+    Mirage.Catalog = Catalog
+    Skins.Catalog = Catalog
+else
+    warn("[Mirage] Failed to load core/Catalog: " .. tostring(Catalog))
 end
 
 local function loadTab(name)
