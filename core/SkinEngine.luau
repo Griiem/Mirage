@@ -606,6 +606,66 @@ return function(RAW_URL)
         end
     end
 
+    local function attachAccessory(character, accessory)
+        local handle = accessory:FindFirstChild("Handle")
+
+        if not handle or not handle:IsA("BasePart") then
+            return false
+        end
+
+        handle.Anchored = false
+        handle.CanCollide = false
+        handle.CanTouch = false
+        handle.CanQuery = false
+        handle.Massless = true
+
+        local oldWeld = handle:FindFirstChild("AccessoryWeld")
+
+        if oldWeld then
+            oldWeld:Destroy()
+        end
+
+        local weld = Instance.new("Weld")
+        weld.Name = "MirageAccessoryWeld"
+        weld.Part1 = handle
+
+        local handleAttachment = handle:FindFirstChildWhichIsA("Attachment")
+        local target
+
+        if handleAttachment then
+            for _, part in character:GetChildren() do
+                if part:IsA("BasePart") then
+                    local candidate = part:FindFirstChild(handleAttachment.Name)
+
+                    if candidate and candidate:IsA("Attachment") then
+                        target = candidate
+                        break
+                    end
+                end
+            end
+        end
+
+        local head = character:FindFirstChild("Head")
+
+        if target then
+            weld.Part0 = target.Parent
+            weld.C0 = target.CFrame
+            weld.C1 = handleAttachment.CFrame
+        elseif head and head:IsA("BasePart") then
+            weld.Part0 = head
+            weld.C0 = CFrame.new(0, head.Size.Y / 2, 0)
+            weld.C1 = accessory.AttachmentPoint
+        else
+            weld:Destroy()
+            return false
+        end
+
+        weld.Parent = handle
+        accessory.Parent = character
+
+        return true
+    end
+
     local function apply(player)
         local character = player.Character
 
@@ -749,13 +809,18 @@ return function(RAW_URL)
             end
         end
 
-        if humanoid and assets.accessories then
+        if assets.accessories then
             for _, template in assets.accessories do
                 local clone = template:Clone()
 
-                local added = pcall(function()
-                    humanoid:AddAccessory(clone)
-                end)
+                local attachOk, attached = pcall(attachAccessory, character, clone)
+                local added = attachOk and attached
+
+                if not added and humanoid then
+                    added = pcall(function()
+                        humanoid:AddAccessory(clone)
+                    end)
+                end
 
                 if added then
                     table.insert(undo, function()
