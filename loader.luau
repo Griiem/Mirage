@@ -1,5 +1,3 @@
-local HttpService = game:GetService("HttpService")
-
 local _version = "1.6.66"
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/download/" .. _version .. "/main.lua"))()
 
@@ -8,8 +6,33 @@ local REPO = "Mirage"
 local BRANCH = "main"
 
 local RAW_URL = ("https://raw.githubusercontent.com/%s/%s/%s/"):format(OWNER, REPO, BRANCH)
-local API_URL = ("https://api.github.com/repos/%s/%s/contents/tabs"):format(OWNER, REPO)
 local CORE_PATH = "core/SkinEngine.luau"
+local TAB_NAMES = { "Catalog", "Skins" }
+
+local SKINS_API = { "Prepare", "Start", "Refresh", "SetEnabled", "SetLocalLoadout", "Report", "Debug", "Count", "Cleanup" }
+local CATALOG_API = { "Search", "Lookup", "FetchAsset", "BundleAssets", "KindOf" }
+
+local function fetchSource(path)
+    local source = game:HttpGet(RAW_URL .. path .. "?t=" .. os.time())
+    assert(source and #source > 0, "Empty source for " .. path)
+
+    local chunk, compileError = loadstring(source)
+    assert(chunk, "Compile error in " .. path .. ": " .. tostring(compileError))
+
+    return chunk
+end
+
+local function missingFunctions(module, names)
+    local missing = {}
+
+    for _, name in names do
+        if type(module[name]) ~= "function" then
+            table.insert(missing, name)
+        end
+    end
+
+    return missing
+end
 
 local Window = WindUI:CreateWindow({
     Title = "",
@@ -49,27 +72,30 @@ Window:Tag({
     Radius = 6.333,
 })
 
-local coreOk, Skins = pcall(function()
-    local source = game:HttpGet(RAW_URL .. CORE_PATH)
-    assert(source and #source > 0, "Empty source")
-
-    local chunk, compileError = loadstring(source)
-    assert(chunk, compileError or "Compilation failed")
-
-    return chunk()(RAW_URL)
-end)
-
-if not coreOk or type(Skins) ~= "table" then
-    local reason = tostring(Skins)
-
-    warn("[Mirage] Failed to load " .. CORE_PATH .. " from " .. RAW_URL .. CORE_PATH .. ": " .. reason)
+local function report(message)
+    warn("[Mirage] " .. message)
 
     WindUI:Notify({
         Title = "Mirage",
-        Content = "Could not load " .. CORE_PATH .. ": " .. reason:sub(1, 120),
+        Content = message:sub(1, 160),
         Icon = "x",
-        Duration = 8,
+        Duration = 10,
     })
+end
+
+local coreOk, Skins = pcall(function()
+    return fetchSource(CORE_PATH)()(RAW_URL)
+end)
+
+if not coreOk or type(Skins) ~= "table" then
+    report("Could not load " .. CORE_PATH .. ": " .. tostring(Skins))
+    return
+end
+
+local missingSkins = missingFunctions(Skins, SKINS_API)
+
+if #missingSkins > 0 then
+    report(CORE_PATH .. " is outdated or incomplete. Missing: " .. table.concat(missingSkins, ", ") .. ". Replace it on GitHub.")
     return
 end
 
@@ -81,13 +107,7 @@ local Mirage = {
 }
 
 function Mirage.Require(path)
-    local source = game:HttpGet(RAW_URL .. path)
-    assert(source and #source > 0, "Empty source for " .. path)
-
-    local chunk, compileError = loadstring(source)
-    assert(chunk, compileError or "Compilation failed for " .. path)
-
-    return chunk()
+    return fetchSource(path)()
 end
 
 local catalogOk, Catalog = pcall(function()
@@ -95,23 +115,21 @@ local catalogOk, Catalog = pcall(function()
 end)
 
 if catalogOk and type(Catalog) == "table" then
-    Mirage.Catalog = Catalog
-    Skins.Catalog = Catalog
+    local missingCatalog = missingFunctions(Catalog, CATALOG_API)
+
+    if #missingCatalog > 0 then
+        report("core/Catalog.luau is outdated or incomplete. Missing: " .. table.concat(missingCatalog, ", ") .. ". Replace it on GitHub.")
+    else
+        Mirage.Catalog = Catalog
+        Skins.Catalog = Catalog
+    end
 else
-    warn("[Mirage] Failed to load core/Catalog: " .. tostring(Catalog))
+    report("Could not load core/Catalog.luau: " .. tostring(Catalog))
 end
 
 local function loadTab(name)
-    local url = RAW_URL .. "tabs/" .. name .. ".luau"
-
     local success, err = pcall(function()
-        local source = game:HttpGet(url)
-        assert(source and #source > 0, "Empty source")
-
-        local chunk, compileError = loadstring(source)
-        assert(chunk, compileError or "Compilation failed")
-
-        local setup = chunk()
+        local setup = Mirage.Require("tabs/" .. name .. ".luau")
 
         assert(
             type(setup) == "function",
@@ -122,49 +140,15 @@ local function loadTab(name)
     end)
 
     if not success then
-        warn("[Mirage] Failed to load tab '" .. name .. "': " .. tostring(err))
-
-        WindUI:Notify({
-            Title = "Mirage",
-            Content = "Tab '" .. name .. "' failed: " .. tostring(err):sub(1, 120),
-            Icon = "x",
-            Duration = 8,
-        })
-
+        report("Tab '" .. name .. "' failed: " .. tostring(err))
         return false
     end
 
     return true
 end
 
-local listed, files = pcall(function()
-    return HttpService:JSONDecode(game:HttpGet(API_URL .. "?ref=" .. BRANCH))
-end)
-
-if not listed or type(files) ~= "table" then
-    warn("[Mirage] Failed to list tabs: " .. tostring(files))
-
-    WindUI:Notify({
-        Title = "Mirage",
-        Content = "Could not list the tabs folder.",
-        Icon = "x",
-        Duration = 5,
-    })
-    return
-end
-
-table.sort(files, function(a, b)
-    return a.name < b.name
-end)
-
-for _, file in ipairs(files) do
-    if file.type == "file" then
-        local tabName = file.name:match("^(.+)%.luau$")
-
-        if tabName then
-            loadTab(tabName)
-        end
-    end
+for _, tabName in TAB_NAMES do
+    loadTab(tabName)
 end
 
 Window:OnDestroy(function()
